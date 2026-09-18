@@ -16,6 +16,18 @@ import (
 	"time"
 )
 
+const (
+	defaultReadTimeout        = 15 * time.Second
+	defaultWriteTimeout       = 30 * time.Second
+	defaultIdleTimeout        = 60 * time.Second
+	defaultMaxBodyBytes int64 = 1 << 20
+	defaultSessionTTL         = 30 * time.Minute
+	defaultMaxSessions        = 256
+	initialScanBuffer         = 1024
+	maximumScanBuffer         = 64 * 1024
+	yamlValueParts            = 2
+)
+
 // Config configures the server runtime. Load it from either LoadEnv or
 // LoadYAML; callers must not merge sources.
 type Config struct {
@@ -42,8 +54,8 @@ func Default() Config {
 	return Config{
 		Name: "mcp-server", Version: "0.0.0", EnableStdio: true,
 		HTTPAddress: ":8080", MCPPath: "/mcp", SSEPath: "/sse", MessagePath: "/message",
-		ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
-		MaxBodyBytes: 1 << 20, SessionTTL: 30 * time.Minute, MaxSessions: 256,
+		ReadTimeout: defaultReadTimeout, WriteTimeout: defaultWriteTimeout, IdleTimeout: defaultIdleTimeout,
+		MaxBodyBytes: defaultMaxBodyBytes, SessionTTL: defaultSessionTTL, MaxSessions: defaultMaxSessions,
 	}
 }
 
@@ -69,7 +81,7 @@ func LoadYAML(path string) (Config, error) {
 	defer func() { _ = file.Close() }()
 	values := map[string]string{}
 	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 1024), 64*1024)
+	scanner.Buffer(make([]byte, initialScanBuffer), maximumScanBuffer)
 	for line := 1; scanner.Scan(); line++ {
 		text := strings.TrimSpace(scanner.Text())
 		if text == "" || strings.HasPrefix(text, "#") {
@@ -82,7 +94,7 @@ func LoadYAML(path string) (Config, error) {
 		if !ok || strings.TrimSpace(key) == "" {
 			return Config{}, fmt.Errorf("line %d: expected key: value", line)
 		}
-		value = strings.TrimSpace(strings.SplitN(value, " #", 2)[0])
+		value = strings.TrimSpace(strings.SplitN(value, " #", yamlValueParts)[0])
 		if strings.ContainsAny(value, "[]{}") {
 			return Config{}, fmt.Errorf("line %d: collections are unsupported", line)
 		}

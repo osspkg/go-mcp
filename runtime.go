@@ -13,7 +13,7 @@ import (
 
 // Transport serves one Server until its context is cancelled.
 type Transport interface {
-	Serve(context.Context, *Server) error
+	Serve(ctx context.Context, server *Server) error
 }
 
 // Run starts every supplied transport concurrently and returns the first

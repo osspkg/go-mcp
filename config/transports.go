@@ -15,13 +15,15 @@ import (
 	"go.osspkg.com/mcp/stdio"
 )
 
+const transportCapacity = 2
+
 // Transports builds the enabled transports for Server.Run. HTTP and legacy
 // SSE share one listener when both are enabled.
 func Transports(configuration Config, server *mcp.Server, input io.Reader, output io.Writer) ([]mcp.Transport, error) {
 	if server == nil {
 		return nil, errors.New("mcp/config: nil server")
 	}
-	transports := make([]mcp.Transport, 0, 2)
+	transports := make([]mcp.Transport, 0, transportCapacity)
 	if configuration.EnableStdio {
 		if input == nil || output == nil {
 			return nil, errors.New("mcp/config: stdio streams are required")
@@ -39,7 +41,8 @@ func Transports(configuration Config, server *mcp.Server, input io.Reader, outpu
 			WriteTimeout: configuration.WriteTimeout,
 			IdleTimeout:  configuration.IdleTimeout,
 		}
-		if configuration.EnableHTTP && configuration.EnableSSE {
+		switch {
+		case configuration.EnableHTTP && configuration.EnableSSE:
 			legacyConfig := sse.Config{
 				Address:      configuration.HTTPAddress,
 				SSEPath:      configuration.SSEPath,
@@ -52,9 +55,9 @@ func Transports(configuration Config, server *mcp.Server, input io.Reader, outpu
 				IdleTimeout:  configuration.IdleTimeout,
 			}
 			transports = append(transports, mcphttp.NewTransportWithSSE(httpConfig, legacyConfig))
-		} else if configuration.EnableHTTP {
+		case configuration.EnableHTTP:
 			transports = append(transports, mcphttp.NewTransport(httpConfig))
-		} else {
+		default:
 			transports = append(transports, sse.NewTransport(sse.Config{
 				Address:      configuration.HTTPAddress,
 				SSEPath:      configuration.SSEPath,

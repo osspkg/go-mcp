@@ -16,6 +16,11 @@ import (
 	"go.osspkg.com/mcp"
 )
 
+const (
+	initialScanBuffer = 1024
+	maximumScanBuffer = 1 << 20
+)
+
 // Transport adapts stdio streams to mcp.Transport.
 type Transport struct {
 	Input  io.Reader
@@ -44,7 +49,7 @@ func Serve(ctx context.Context, server *mcp.Server, input io.Reader, output io.W
 	serveCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	scanner := bufio.NewScanner(input)
-	scanner.Buffer(make([]byte, 1024), 1<<20)
+	scanner.Buffer(make([]byte, initialScanBuffer), maximumScanBuffer)
 	writer := bufio.NewWriter(output)
 	defer func() { _ = writer.Flush() }()
 	if closer, ok := input.(io.Closer); ok {

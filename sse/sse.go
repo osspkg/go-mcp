@@ -22,6 +22,18 @@ import (
 	"go.osspkg.com/mcp"
 )
 
+const (
+	defaultMaxBodyBytes int64 = 1 << 20
+	defaultSessionTTL         = 30 * time.Minute
+	defaultReadTimeout        = 15 * time.Second
+	defaultWriteTimeout       = 30 * time.Second
+	defaultIdleTimeout        = 60 * time.Second
+	defaultMaxSessions        = 256
+	sessionIDBytes            = 24
+	messageQueueSize          = 16
+	shutdownTimeout           = 5 * time.Second
+)
+
 // Config configures the legacy SSE endpoints.
 type Config struct {
 	Address      string
@@ -37,7 +49,7 @@ type Config struct {
 
 // DefaultConfig returns legacy endpoint defaults.
 func DefaultConfig() Config {
-	return Config{Address: ":8080", SSEPath: "/sse", MessagePath: "/message", MaxBodyBytes: 1 << 20, SessionTTL: 30 * time.Minute, MaxSessions: 256, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
+	return Config{Address: ":8080", SSEPath: "/sse", MessagePath: "/message", MaxBodyBytes: defaultMaxBodyBytes, SessionTTL: defaultSessionTTL, MaxSessions: defaultMaxSessions, ReadTimeout: defaultReadTimeout, WriteTimeout: defaultWriteTimeout, IdleTimeout: defaultIdleTimeout}
 }
 
 // Transport adapts legacy SSE to mcp.Transport.
@@ -60,7 +72,7 @@ func (transport *Transport) Serve(ctx context.Context, server *mcp.Server) error
 	if config.Address == "" {
 		config.Address = defaults.Address
 	}
-	httpServer := Server(ctx, config.Address, handler, config.ReadTimeout, config.WriteTimeout, config.IdleTimeout)
+	httpServer := Server(ctx, ServerConfig{Address: config.Address, Handler: handler, ReadTimeout: config.ReadTimeout, WriteTimeout: config.WriteTimeout, IdleTimeout: config.IdleTimeout})
 	err = httpServer.ListenAndServe()
 	if errors.Is(err, stdhttp.ErrServerClosed) {
 		return ctx.Err()
@@ -202,12 +214,12 @@ func (handler *Handler) newSession() (string, *session, error) {
 	if len(handler.sessions) >= handler.config.MaxSessions {
 		return "", nil, errors.New("session limit")
 	}
-	raw := make([]byte, 24)
+	raw := make([]byte, sessionIDBytes)
 	if _, err := rand.Read(raw); err != nil {
 		return "", nil, err
 	}
 	id := hex.EncodeToString(raw)
-	item := &session{expiry: time.Now().Add(handler.config.SessionTTL), messages: make(chan []byte, 16)}
+	item := &session{expiry: time.Now().Add(handler.config.SessionTTL), messages: make(chan []byte, messageQueueSize)}
 	handler.sessions[id] = item
 	return id, item, nil
 }
@@ -244,9 +256,23 @@ func headers(input stdhttp.Header) map[string]string {
 	return result
 }
 
+// ServerConfig configures an HTTP server and graceful shutdown.
+type ServerConfig struct {
+	Address      string
+	Handler      stdhttp.Handler
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+	IdleTimeout  time.Duration
+}
+
 // Server creates an HTTP server that is shut down when ctx is cancelled.
-func Server(ctx context.Context, address string, handler stdhttp.Handler, readTimeout, writeTimeout, idleTimeout time.Duration) *stdhttp.Server {
-	server := &stdhttp.Server{Addr: address, Handler: handler, ReadTimeout: readTimeout, WriteTimeout: writeTimeout, IdleTimeout: idleTimeout}
-	go func() { <-ctx.Done(); _ = server.Shutdown(context.Background()) }()
+func Server(ctx context.Context, config ServerConfig) *stdhttp.Server {
+	server := &stdhttp.Server{Addr: config.Address, Handler: config.Handler, ReadTimeout: config.ReadTimeout, WriteTimeout: config.WriteTimeout, IdleTimeout: config.IdleTimeout}
+	go func() {
+		<-ctx.Done()
+		shutdownContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
+		defer cancel()
+		_ = server.Shutdown(shutdownContext)
+	}()
 	return server
 }

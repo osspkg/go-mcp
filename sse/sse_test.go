@@ -36,6 +36,9 @@ func TestUnitSSEEndpointAndMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	post, err := http.NewRequest(http.MethodPost, "/message?sessionId="+id, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
 	post.Header.Set("Content-Type", "application/json")
 	posted := httptest.NewRecorder()
 	handler.ServeHTTP(posted, post)
