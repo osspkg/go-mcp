@@ -1,0 +1,253 @@
+version: "2"
+
+run:
+  go: "1.26"
+  timeout: 5m
+  tests: true
+  issues-exit-code: 1
+  modules-download-mode: readonly
+  allow-parallel-runners: true
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  new: false
+  fix: true
+
+output:
+  formats:
+    text:
+      print-linter-name: true
+      print-issued-lines: true
+
+formatters:
+  exclusions:
+    paths:
+      - vendors/
+  enable:
+    - gofmt
+    - goimports
+    - gofumpt
+
+linters:
+  settings:
+    staticcheck:
+      checks:
+        - all
+        - -S1023
+        - -ST1000
+        - -ST1003
+        - -ST1020
+    gosec:
+      excludes:
+        - G104
+        - G115
+        - G301
+        - G304
+        - G306
+        - G501
+        - G505
+    tagliatelle:
+      case:
+        rules:
+          json: snake # JSON: snake_case (user_id)
+          yaml: snake # YAML: snake_case
+          xml: camel # XML: camelCase
+          mapstructure: snake # mapstructure: snake_case
+          env: upperSnake # ENV: UPPER_SNAKE_CASE
+    varnamelen:
+      min-name-length: 2 # Минимальная длина имени
+      max-distance: 5 # i, j, k допустимы в scope <= 5 строк
+      ignore-names:
+        - err # err — идиоматично
+        - ok # ok — идиоматично
+        - id # id — часто используется
+        - db # db — часто используется
+        - tx # tx — транзакция
+        - wg # wg — WaitGroup
+        - mu # mu — mutex
+        - rw # rw — RWMutex
+        - ch # ch — channel
+        - fn # fn — function
+        - sb # sb — strings.Builder
+        - ctx # ctx — context
+        - q # q — querier
+        - r # r — repo / reader
+        - s # s — strategy / service
+        - f # f — filter
+        - a # a — left operand (сравнение)
+        - b # b — right operand (сравнение)
+      ignore-type-assert-ok: true # Игнорировать v, ok := x.(T)
+      ignore-map-index-ok: true # Игнорировать v, ok := m[k]
+      ignore-chan-recv-ok: true # Игнорировать v, ok := <-ch
+      ignore-decls:
+        - i int # for i := ...
+        - j int # вложенные циклы
+        - n int # количество
+        - t testing.T # тесты
+        - b testing.B # бенчмарки
+        - r *http.Request # HTTP handler
+        - w http.ResponseWriter # HTTP handler
+        - c *gin.Context # Gin context
+        - c echo.Context # Echo context
+        - s *Server # конструктор Server
+        - m *metrics # конструктор metrics
+    revive:
+      severity: warning
+      rules:
+        # -------------------------------------------------------------------------
+        # Предотвращение багов
+        # -------------------------------------------------------------------------
+        - name: atomic # Проверяет правильное использование sync/atomic
+        - name: range-val-in-closure # Захват переменной цикла в замыкании
+        - name: range-val-address # Взятие адреса переменной цикла
+        - name: unreachable-code # Недостижимый код после return/panic
+        - name: unchecked-type-assertion # Type assertion без проверки ok
+        - name: datarace # Потенциальные data races
+        - name: identical-branches # Одинаковые ветки if/else
+        - name: defer # Проблемы с defer (в циклах, результат)
+        - name: call-to-gc # Явные вызовы runtime.GC()
+        - name: waitgroup-by-value # WaitGroup передан по значению
+
+        # -------------------------------------------------------------------------
+        # Обработка ошибок — Go proverb: "Don't just check errors, handle them gracefully"
+        # -------------------------------------------------------------------------
+        - name: error-strings # Ошибки не должны начинаться с большой буквы
+        - name: error-return # error должен быть последним возвращаемым значением
+        - name: errorf # Использовать fmt.Errorf вместо errors.New + fmt.Sprintf
+        - name: unhandled-error # Необработанные ошибки
+          arguments:
+            - "fmt.Print"
+            - "fmt.Printf"
+            - "fmt.Println"
+
+        # -------------------------------------------------------------------------
+        # Сложность — Go proverb: "Clear is better than clever"
+        # -------------------------------------------------------------------------
+        - name: cognitive-complexity
+          arguments: [15] # Cognitive complexity <= 15
+        - name: cyclomatic
+          arguments: [10] # Cyclomatic complexity <= 10
+        - name: function-result-limit
+          arguments: [3] # Максимум 3 возвращаемых значения
+        - name: argument-limit
+          arguments: [5] # Максимум 5 аргументов функции
+
+        # -------------------------------------------------------------------------
+        # Чистота кода — Go proverb: "A little copying is better than a little dependency"
+        # -------------------------------------------------------------------------
+        - name: indent-error-flow # if err != nil { return } вместо else
+        - name: early-return # Ранний возврат вместо вложенности
+        - name: superfluous-else # Лишний else после return
+        - name: if-return # Упрощение if/return
+        - name: empty-block # Пустые блоки кода
+        - name: unnecessary-stmt # Ненужные операторы
+        - name: redundant-import-alias # import pkg "pkg" — лишний алиас
+        - name: confusing-results # Запутанные возвращаемые значения
+        - name: bool-literal-in-expr # if x == true → if x
+        - name: constant-logical-expr # Константные логические выражения
+        - name: modifies-parameter # Модификация параметров функции
+        - name: modifies-value-receiver # Модификация value receiver (бесполезно)
+        - name: redefines-builtin-id # Переопределение встроенных идентификаторов
+        - name: string-of-int # string(int) — частая ошибка
+        - name: time-equal # time.Time сравнение через ==
+        - name: unconditional-recursion # Безусловная рекурсия (бесконечный цикл)
+        - name: useless-break # break в конце case (Go делает это автоматически)
+
+        # -------------------------------------------------------------------------
+        # Хорошие практики — Go proverbs
+        # -------------------------------------------------------------------------
+        - name: context-as-argument # context.Context первым аргументом
+        - name: context-keys-type # Ключи контекста должны быть типизированы
+        - name: var-declaration # var x = 1 → x := 1
+        - name: blank-imports # Запрет blank imports кроме main/test
+        - name: dot-imports # Запрет dot imports
+        - name: unexported-return # Публичная функция возвращает приватный тип
+        - name: exported # Экспортируемые идентификаторы должны быть задокументированы
+          arguments:
+            - "checkPrivateReceivers"
+            - "disableStutteringCheck"
+
+        # -------------------------------------------------------------------------
+        # Именование — Go proverb: "Good naming is like good coding: concise"
+        # -------------------------------------------------------------------------
+        - name: var-naming
+          arguments:
+            - [
+                "ID",
+                "URL",
+                "API",
+                "HTTP",
+                "JSON",
+                "XML",
+                "DB",
+                "SQL",
+                "UUID",
+                "UID",
+                "GUID",
+                "TTL",
+                "TCP",
+                "UDP",
+                "IP",
+                "RPC",
+                "QPS",
+                "EOF",
+              ]
+        - name: package-comments # Пакеты должны иметь комментарии
+        - name: receiver-naming # Имена receiver (r, s, c, не this/self)
+  exclusions:
+    paths:
+      - vendors/
+  default: none
+  enable:
+    - govet
+    - errcheck
+    - misspell
+    - gocyclo
+    - ineffassign
+    - unparam
+    - unused
+    - prealloc
+    - durationcheck
+    - staticcheck
+    - makezero
+    - nilerr
+    - errorlint
+    - bodyclose
+    - gosec
+    - nilerr
+    - nilnesserr
+    - nilnil
+    - bidichk
+    - contextcheck
+    - fatcontext
+    - makezero
+    - forcetypeassert
+    - unconvert
+    - copyloopvar
+    - prealloc
+    - perfsprint
+    - gocritic
+    - goconst
+    - mnd
+    - revive
+    - predeclared
+    - reassign
+    - recvcheck
+    - asciicheck
+    - importas
+    - durationcheck
+    - tparallel
+    - thelper
+    - usetesting
+    - musttag
+    - errchkjson
+    - tagalign
+    - usestdlibvars
+    - nestif
+    - mirror
+    - whitespace
+    - decorder
+    - nonamedreturns
+    - inamedparam
+    - testpackage

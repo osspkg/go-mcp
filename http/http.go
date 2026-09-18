@@ -1,0 +1,236 @@
+// Package http provides the MCP Streamable HTTP transport.
+package http
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"io"
+	stdhttp "net/http"
+	"sync"
+	"time"
+
+	"go.osspkg.com/mcp"
+	"go.osspkg.com/mcp/sse"
+)
+
+// Config configures a Streamable HTTP handler.
+type Config struct {
+	Address      string
+	Path         string
+	MaxBodyBytes int64
+	SessionTTL   time.Duration
+	MaxSessions  int
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+	IdleTimeout  time.Duration
+}
+
+// DefaultConfig returns transport defaults.
+func DefaultConfig() Config {
+	return Config{Address: ":8080", Path: "/mcp", MaxBodyBytes: 1 << 20, SessionTTL: 30 * time.Minute, MaxSessions: 256, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
+}
+
+// Transport adapts Streamable HTTP to mcp.Transport.
+type Transport struct {
+	Config    Config
+	LegacySSE *sse.Config
+}
+
+// NewTransport creates an HTTP transport.
+func NewTransport(config Config) *Transport { return &Transport{Config: config} }
+
+// NewTransportWithSSE creates one HTTP listener serving Streamable HTTP and
+// the legacy SSE endpoints together.
+func NewTransportWithSSE(config Config, legacy sse.Config) *Transport {
+	return &Transport{Config: config, LegacySSE: &legacy}
+}
+
+// Serve implements mcp.Transport.
+func (transport *Transport) Serve(ctx context.Context, server *mcp.Server) error {
+	if transport == nil {
+		return errors.New("mcp/http: nil transport")
+	}
+	handler, err := NewHandler(server, transport.Config)
+	if err != nil {
+		return err
+	}
+	config := transport.Config
+	defaults := DefaultConfig()
+	if config.Address == "" {
+		config.Address = defaults.Address
+	}
+	if config.Path == "" {
+		config.Path = defaults.Path
+	}
+	mux := stdhttp.NewServeMux()
+	mux.Handle(config.Path, handler)
+	if transport.LegacySSE != nil {
+		legacyConfig := *transport.LegacySSE
+		legacyDefaults := sse.DefaultConfig()
+		if legacyConfig.SSEPath == "" {
+			legacyConfig.SSEPath = legacyDefaults.SSEPath
+		}
+		if legacyConfig.MessagePath == "" {
+			legacyConfig.MessagePath = legacyDefaults.MessagePath
+		}
+		legacy, legacyErr := sse.NewHandler(server, legacyConfig)
+		if legacyErr != nil {
+			return legacyErr
+		}
+		mux.Handle(legacyConfig.SSEPath, legacy)
+		mux.Handle(legacyConfig.MessagePath, legacy)
+	}
+	httpServer := Server(ctx, config.Address, mux, config.ReadTimeout, config.WriteTimeout, config.IdleTimeout)
+	err = httpServer.ListenAndServe()
+	if errors.Is(err, stdhttp.ErrServerClosed) {
+		return ctx.Err()
+	}
+	return err
+}
+
+// Handler serves Streamable HTTP requests at Config.Path.
+type Handler struct {
+	server   *mcp.Server
+	config   Config
+	mu       sync.Mutex
+	sessions map[string]time.Time
+}
+
+// NewHandler creates a Streamable HTTP handler.
+func NewHandler(server *mcp.Server, config Config) (*Handler, error) {
+	if server == nil {
+		return nil, errors.New("mcp/http: nil server")
+	}
+	if config.Path == "" {
+		config.Path = "/mcp"
+	}
+	if config.MaxBodyBytes <= 0 {
+		config.MaxBodyBytes = 1 << 20
+	}
+	if config.SessionTTL <= 0 {
+		config.SessionTTL = 30 * time.Minute
+	}
+	if config.MaxSessions <= 0 {
+		config.MaxSessions = 256
+	}
+	return &Handler{server: server, config: config, sessions: map[string]time.Time{}}, nil
+}
+
+// ServeHTTP implements net/http.Handler.
+func (handler *Handler) ServeHTTP(writer stdhttp.ResponseWriter, request *stdhttp.Request) {
+	if request.URL.Path != handler.config.Path {
+		stdhttp.NotFound(writer, request)
+		return
+	}
+	if request.Method != stdhttp.MethodPost {
+		writer.Header().Set("Allow", stdhttp.MethodPost)
+		stdhttp.Error(writer, "method not allowed", stdhttp.StatusMethodNotAllowed)
+		return
+	}
+	if request.Header.Get("Content-Type") != "application/json" {
+		stdhttp.Error(writer, "unsupported media type", stdhttp.StatusUnsupportedMediaType)
+		return
+	}
+	payload, err := io.ReadAll(stdhttp.MaxBytesReader(writer, request.Body, handler.config.MaxBodyBytes))
+	if err != nil {
+		stdhttp.Error(writer, "request body too large", stdhttp.StatusRequestEntityTooLarge)
+		return
+	}
+	sessionID := request.Header.Get("Mcp-Session-Id")
+	if sessionID != "" && !handler.validSession(sessionID) {
+		stdhttp.Error(writer, "session not found", stdhttp.StatusNotFound)
+		return
+	}
+	meta := mcp.RequestMeta{Transport: "http", Headers: headers(request.Header), SessionID: sessionID}
+	response, err := handler.server.ServeJSON(request.Context(), payload, meta)
+	if errors.Is(err, mcp.ErrUnauthorized) || bytes.Contains(response, []byte(`"code":-32001`)) {
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(stdhttp.StatusUnauthorized)
+		_, _ = writer.Write(response)
+		return
+	}
+	if errors.Is(err, mcp.ErrForbidden) || bytes.Contains(response, []byte(`"code":-32003`)) {
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(stdhttp.StatusForbidden)
+		_, _ = writer.Write(response)
+		return
+	}
+	if err != nil {
+		stdhttp.Error(writer, "internal error", stdhttp.StatusInternalServerError)
+		return
+	}
+	if isInitialize(payload) && sessionID == "" {
+		sessionID, err = handler.newSession()
+		if err != nil {
+			stdhttp.Error(writer, "session capacity reached", stdhttp.StatusServiceUnavailable)
+			return
+		}
+		writer.Header().Set("Mcp-Session-Id", sessionID)
+	}
+	writer.Header().Set("Content-Type", "application/json")
+	writer.WriteHeader(stdhttp.StatusOK)
+	if response != nil {
+		_, _ = writer.Write(response)
+	}
+}
+
+func (handler *Handler) validSession(id string) bool {
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+	handler.expire()
+	_, ok := handler.sessions[id]
+	return ok
+}
+
+func (handler *Handler) newSession() (string, error) {
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+	handler.expire()
+	if len(handler.sessions) >= handler.config.MaxSessions {
+		return "", errors.New("session limit")
+	}
+	raw := make([]byte, 24)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	id := hex.EncodeToString(raw)
+	handler.sessions[id] = time.Now().Add(handler.config.SessionTTL)
+	return id, nil
+}
+
+func (handler *Handler) expire() {
+	now := time.Now()
+	for id, expiry := range handler.sessions {
+		if now.After(expiry) {
+			delete(handler.sessions, id)
+		}
+	}
+}
+
+func headers(input stdhttp.Header) map[string]string {
+	result := make(map[string]string, len(input))
+	for key, values := range input {
+		if len(values) > 0 {
+			result[key] = values[0]
+		}
+	}
+	return result
+}
+
+func isInitialize(payload []byte) bool {
+	var request struct {
+		Method string `json:"method"`
+	}
+	return json.Unmarshal(payload, &request) == nil && request.Method == "initialize"
+}
+
+// Server returns an HTTP server that shuts down when ctx is cancelled.
+func Server(ctx context.Context, address string, handler stdhttp.Handler, readTimeout, writeTimeout, idleTimeout time.Duration) *stdhttp.Server {
+	server := &stdhttp.Server{Addr: address, Handler: handler, ReadTimeout: readTimeout, WriteTimeout: writeTimeout, IdleTimeout: idleTimeout}
+	go func() { <-ctx.Done(); _ = server.Shutdown(context.Background()) }()
+	return server
+}
