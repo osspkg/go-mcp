@@ -82,9 +82,23 @@ handler, _ := sse.NewHandler(server, sse.DefaultConfig())
 err := http.ListenAndServe(":8080", handler)
 ```
 
-`Server.Run(ctx, transports...)` starts implementations of `mcp.Transport`
-concurrently. Use `http.NewTransportWithSSE` when `/mcp`, `/sse`, and
-`/message` must share one listener.
+`Server.Run(transports...)` starts implementations of `mcp.Transport`
+concurrently and owns their coordinated shutdown. It creates a signal-aware
+context internally, stops on `SIGINT` or `SIGTERM`, and waits for every
+transport to finish before returning:
+
+```go
+err := server.Run(transports...)
+if err != nil && !errors.Is(err, context.Canceled) {
+	log.Fatal(err)
+}
+```
+
+Use `Server.RunContext(ctx, transports...)` when the application owns the
+parent context and cancellation policy.
+
+Use `http.NewTransportWithSSE` when `/mcp`, `/sse`, and `/message` must share
+one listener.
 
 ## Configuration
 
@@ -96,7 +110,7 @@ fromEnv, err := config.LoadEnv()
 fromFile, err := config.LoadYAML("server.yaml")
 
 transports, err := config.Transports(fromEnv, server, os.Stdin, os.Stdout)
-err = server.Run(ctx, transports...)
+err = server.Run(transports...)
 ```
 
 The YAML reader intentionally supports only flat scalar values:

@@ -113,8 +113,40 @@ func TestUnitRunCancelsTransports(t *testing.T) {
 	server, _ := New(ServerInfo{Name: "test", Version: "1"})
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
 	defer cancel()
-	err := server.Run(ctx, testTransport(func(ctx context.Context, _ *Server) error { <-ctx.Done(); return ctx.Err() }))
+	err := server.RunContext(ctx, testTransport(func(ctx context.Context, _ *Server) error { <-ctx.Done(); return ctx.Err() }))
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestUnitRunWaitsForTransportShutdownAfterFailure(t *testing.T) {
+	server, _ := New(ServerInfo{Name: "test", Version: "1"})
+	started := make(chan struct{})
+	stopped := make(chan struct{})
+	wantErr := errors.New("transport failed")
+
+	err := server.RunContext(t.Context(),
+		testTransport(func(ctx context.Context, _ *Server) error {
+			close(started)
+			<-ctx.Done()
+			close(stopped)
+			return ctx.Err()
+		}),
+		testTransport(func(ctx context.Context, _ *Server) error {
+			select {
+			case <-started:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			return wantErr
+		}),
+	)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("got %v, want %v", err, wantErr)
+	}
+	select {
+	case <-stopped:
+	default:
+		t.Fatal("Run returned before the remaining transport stopped")
 	}
 }

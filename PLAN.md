@@ -49,10 +49,12 @@ must pass `make lint` and `make tests`; transport/concurrency tasks also run
    handle client disconnects and cancellation, validate requests before queue
    writes, and release sessions after expiry or disconnect.
 10. **Concurrent runtime composition.** Keep the core independent of transport
-    imports using the `Transport` interface. `Server.Run(ctx, transports...)`
-    starts configured transports concurrently, returns the first failure, and
-    coordinates cancellation and shutdown. HTTP and legacy SSE can be mounted
-    on one listener with `http.NewTransportWithSSE`.
+    imports using the `Transport` interface. `Server.Run(transports...)`
+    starts configured transports concurrently, owns SIGINT/SIGTERM cancellation
+    and shutdown, and waits for all transports. `Server.RunContext(ctx, ...)`
+    remains available when the embedding application owns the lifecycle. HTTP
+    and legacy SSE can be mounted on one listener with
+    `http.NewTransportWithSSE`.
 11. **Examples and regression coverage.** Add README examples for typed tools,
     middleware, env/YAML config, stdio, Streamable HTTP, and SSE. Test malformed
     JSON-RPC, catalog operations, schema generation, duplicate/late

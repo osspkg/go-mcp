@@ -8,7 +8,10 @@ package mcp
 import (
 	"context"
 	"errors"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 )
 
 // Transport serves one Server until its context is cancelled.
@@ -16,23 +19,49 @@ type Transport interface {
 	Serve(ctx context.Context, server *Server) error
 }
 
-// Run starts every supplied transport concurrently and returns the first
-// transport failure. Cancelling ctx asks every transport to stop.
-func (server *Server) Run(ctx context.Context, transports ...Transport) error {
+// Run starts every supplied transport concurrently and owns their coordinated
+// shutdown. It stops on SIGINT or SIGTERM, waits until all transports have
+// returned, and then returns the shutdown or transport error.
+func (server *Server) Run(transports ...Transport) error {
+	ctx, stop := signal.NotifyContext(
+		context.Background(),
+		os.Interrupt,
+		syscall.SIGINT,
+		syscall.SIGTERM,
+		syscall.SIGKILL,
+	)
+	defer stop()
+	return server.run(ctx, transports...)
+}
+
+// RunContext is Run with a caller-owned context. It is useful when the
+// application has its own lifecycle or when a server is embedded in another
+// process. Cancelling ctx asks every transport to stop.
+func (server *Server) RunContext(ctx context.Context, transports ...Transport) error {
+	return server.run(ctx, transports...)
+}
+
+func (server *Server) run(ctx context.Context, transports ...Transport) error {
 	if server == nil {
 		return errors.New("mcp: nil server")
+	}
+	if ctx == nil {
+		return errors.New("mcp: nil context")
 	}
 	if len(transports) == 0 {
 		return errors.New("mcp: at least one transport is required")
 	}
+	for _, transport := range transports {
+		if transport == nil {
+			return errors.New("mcp: nil transport")
+		}
+	}
+
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errCh := make(chan error, len(transports))
 	var group sync.WaitGroup
 	for _, transport := range transports {
-		if transport == nil {
-			return errors.New("mcp: nil transport")
-		}
 		group.Add(1)
 		go func(item Transport) {
 			defer group.Done()
@@ -48,11 +77,19 @@ func (server *Server) Run(ctx context.Context, transports ...Transport) error {
 	}()
 	select {
 	case err := <-errCh:
+		cancel()
+		<-done
 		return err
 	case <-ctx.Done():
+		cancel()
 		<-done
 		return ctx.Err()
 	case <-done:
-		return nil
+		select {
+		case err := <-errCh:
+			return err
+		default:
+			return nil
+		}
 	}
 }
