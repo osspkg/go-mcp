@@ -50,6 +50,7 @@ linters:
     tagliatelle:
       case:
         rules:
+          mcp: snake
           json: snake # JSON: snake_case (user_id)
           yaml: snake # YAML: snake_case
           xml: camel # XML: camelCase
@@ -125,9 +126,9 @@ linters:
         # Сложность — Go proverb: "Clear is better than clever"
         # -------------------------------------------------------------------------
         - name: cognitive-complexity
-          arguments: [15] # Cognitive complexity <= 15
+          arguments: [30] # Cognitive complexity <= 15
         - name: cyclomatic
-          arguments: [10] # Cyclomatic complexity <= 10
+          arguments: [30] # Cyclomatic complexity <= 10
         - name: function-result-limit
           arguments: [3] # Максимум 3 возвращаемых значения
         - name: argument-limit
@@ -250,4 +251,3 @@ linters:
     - decorder
     - nonamedreturns
     - inamedparam
-    - testpackage

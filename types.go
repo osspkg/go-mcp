@@ -1,3 +1,8 @@
+/*
+ *  Copyright (c) 2026 Mikhail Knyazhev <markus621@yandex.com>. All rights reserved.
+ *  Use of this source code is governed by a BSD 3-Clause license that can be found in the LICENSE file.
+ */
+
 // Package mcp implements a small, stdlib-only server for the Model Context
 // Protocol revision 2025-11-25.
 package mcp
