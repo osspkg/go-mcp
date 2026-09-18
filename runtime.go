@@ -20,15 +20,13 @@ type Transport interface {
 }
 
 // Run starts every supplied transport concurrently and owns their coordinated
-// shutdown. It stops on SIGINT or SIGTERM, waits until all transports have
-// returned, and then returns the shutdown or transport error.
+// shutdown. It stops on os.Interrupt or SIGTERM, waits until all transports
+// have returned, and returns context.Canceled for signal-triggered shutdown.
 func (server *Server) Run(transports ...Transport) error {
 	ctx, stop := signal.NotifyContext(
 		context.Background(),
 		os.Interrupt,
-		syscall.SIGINT,
 		syscall.SIGTERM,
-		syscall.SIGKILL,
 	)
 	defer stop()
 	return server.run(ctx, transports...)

@@ -50,7 +50,7 @@ must pass `make lint` and `make tests`; transport/concurrency tasks also run
    writes, and release sessions after expiry or disconnect.
 10. **Concurrent runtime composition.** Keep the core independent of transport
     imports using the `Transport` interface. `Server.Run(transports...)`
-    starts configured transports concurrently, owns SIGINT/SIGTERM cancellation
+    starts configured transports concurrently, owns os.Interrupt/SIGTERM cancellation
     and shutdown, and waits for all transports. `Server.RunContext(ctx, ...)`
     remains available when the embedding application owns the lifecycle. HTTP
     and legacy SSE can be mounted on one listener with

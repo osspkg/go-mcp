@@ -61,31 +61,56 @@ server, _ := mcp.New(mcp.ServerInfo{Name: "secured", Version: "1.0.0"},
 
 ## Transports
 
-Run stdio directly with process stdin/stdout. Do not write logs to the output
-writer; it is reserved for protocol data.
+The transport adapters implement `mcp.Transport` and can be passed directly to
+`Server.Run`. Do not write logs to the stdio output writer; it is reserved for
+JSON-RPC protocol data.
+
+### Stdio
 
 ```go
-err := stdio.Serve(ctx, server, os.Stdin, os.Stdout)
+transport := stdio.NewTransport(os.Stdin, os.Stdout)
+err := server.Run(transport)
 ```
 
-Use the HTTP handler at `/mcp` with `net/http`:
+### Streamable HTTP
 
 ```go
-handler, _ := mcphttp.NewHandler(server, mcphttp.DefaultConfig())
-err := http.ListenAndServe(":8080", handler)
+transport := mcphttp.NewTransport(mcphttp.Config{
+	Address: ":8080",
+	Path:    "/mcp",
+})
+err := server.Run(transport)
 ```
 
-For legacy clients, mount the SSE handler; it serves `/sse` and `/message`.
+The transport serves `POST /mcp` and performs graceful HTTP shutdown when
+`Run` receives a stop signal.
+
+### Legacy SSE
 
 ```go
-handler, _ := sse.NewHandler(server, sse.DefaultConfig())
-err := http.ListenAndServe(":8080", handler)
+transport := sse.NewTransport(sse.Config{
+	Address:     ":8080",
+	SSEPath:     "/sse",
+	MessagePath: "/message",
+})
+err := server.Run(transport)
 ```
 
-`Server.Run(transports...)` starts implementations of `mcp.Transport`
-concurrently and owns their coordinated shutdown. It creates a signal-aware
-context internally, stops on `SIGINT` or `SIGTERM`, and waits for every
-transport to finish before returning:
+For one listener serving both Streamable HTTP and legacy SSE, use
+`NewTransportWithSSE`:
+
+```go
+transport := mcphttp.NewTransportWithSSE(
+	mcphttp.Config{Address: ":8080", Path: "/mcp"},
+	sse.Config{SSEPath: "/sse", MessagePath: "/message"},
+)
+err := server.Run(transport)
+```
+
+`Server.Run(transports...)` creates a signal-aware context internally, stops
+on `os.Interrupt` or `SIGTERM`, cancels all transports, and waits for every
+transport to finish before returning. A signal-triggered shutdown returns
+`context.Canceled`, which is normally treated as a clean exit:
 
 ```go
 err := server.Run(transports...)
@@ -95,22 +120,39 @@ if err != nil && !errors.Is(err, context.Canceled) {
 ```
 
 Use `Server.RunContext(ctx, transports...)` when the application owns the
-parent context and cancellation policy.
+parent context and cancellation policy. `RunContext` is also useful for
+embedding the server in another process or for tests:
 
-Use `http.NewTransportWithSSE` when `/mcp`, `/sse`, and `/message` must share
-one listener.
+```go
+ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
+
+err := server.RunContext(ctx, transport)
+```
 
 ## Configuration
 
-Load exactly one source. Environment variables use the `MCP_` prefix, for
-example `MCP_NAME`, `MCP_VERSION`, `MCP_ENABLE_HTTP`, and `MCP_HTTP_ADDRESS`.
+Load exactly one source; do not merge the results of `LoadEnv` and `LoadYAML`.
+Environment variables use the `MCP_` prefix, for example `MCP_NAME`,
+`MCP_VERSION`, `MCP_ENABLE_HTTP`, and `MCP_HTTP_ADDRESS`.
 
 ```go
-fromEnv, err := config.LoadEnv()
-fromFile, err := config.LoadYAML("server.yaml")
+configuration, err := config.LoadEnv()
+if err != nil {
+	log.Fatal(err)
+}
 
-transports, err := config.Transports(fromEnv, server, os.Stdin, os.Stdout)
+transports, err := config.Transports(configuration, server, os.Stdin, os.Stdout)
+if err != nil {
+	log.Fatal(err)
+}
 err = server.Run(transports...)
+```
+
+For YAML configuration, replace the loader with:
+
+```go
+configuration, err := config.LoadYAML("server.yaml")
 ```
 
 The YAML reader intentionally supports only flat scalar values:

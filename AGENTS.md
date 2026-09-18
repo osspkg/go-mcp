@@ -11,3 +11,8 @@ protocol data to stdout from the stdio transport except JSON-RPC messages.
 
 The supported MCP revision is `2025-11-25`. Streamable HTTP is the primary
 remote transport; SSE is a legacy compatibility transport.
+
+`Server.Run(transports...)` owns the normal process lifecycle and listens for
+`os.Interrupt` and `SIGTERM`. Use `Server.RunContext(ctx, transports...)` when
+an embedding application owns cancellation. Both APIs must cancel transports
+and wait for their completion before returning.
