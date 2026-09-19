@@ -15,6 +15,7 @@ middleware и запускаете включённые транспорты ч�
 2. [Архитектура](#2-архитектура)
 3. [Быстрый старт](#3-быстрый-старт)
 4. [Основной API пакета mcp](#4-основной-api-пакета-mcp)
+   - [API регистрации и взаимодействие с LLM](#api-регистрации-и-взаимодействие-с-llm)
 5. [Typed tools и JSON Schema](#5-typed-tools-и-json-schema)
 6. [Resources и prompts](#6-resources-и-prompts)
 7. [Middleware и авторизация](#7-middleware-и-авторизация)
@@ -218,6 +219,250 @@ func (s *Server) RegisterPrompt(prompt Prompt) error
 При первом запросе реестр фиксируется. После этого регистрация возвращает
 ErrStarted; это позволяет безопасно обслуживать запросы конкурентно и
 гарантирует стабильные ответы */list.
+
+### API регистрации и взаимодействие с LLM
+
+Регистрация добавляет возможность в каталог сервера. Она не вызывает LLM и не
+передаёт Go-функцию непосредственно модели. MCP-клиент подключается к серверу,
+получает каталог через JSON-RPC и сам решает, какие записи показать модели.
+
+| API | Что регистрируется | Метод обнаружения | Метод запроса | Для чего подходит |
+| --- | --- | --- | --- | --- |
+| `RegisterResource` | Фиксированный URI и его содержимое | `resources/list` | `resources/read` | Конфигурация, документация или другой стабильный документ |
+| `RegisterResourceTemplate` | Шаблон URI и callback | `resources/templates/list` | `resources/read` с конкретным URI | Файлы, записи и другие данные, адресуемые переменными |
+| `RegisterPrompt` | Повторно используемый prompt и его аргументы | `prompts/list` | `prompts/get` | Управляемые сценарии и повторяемые инструкции |
+| `RegisterTool` | Вызываемая операция с типизированными input/output | `tools/list` | `tools/call` | Действия, расчёты и интеграции |
+
+Регистрируйте все записи при создании сервера, до вызова `Run` или обработки
+первого запроса:
+
+~~~go
+server, err := mcp.New(mcp.ServerInfo{Name: "catalog", Version: "1.0.0"})
+if err != nil {
+    return err
+}
+if err := server.RegisterResource(resource); err != nil {
+    return err
+}
+if err := server.RegisterResourceTemplate(template); err != nil {
+    return err
+}
+if err := server.RegisterPrompt(prompt); err != nil {
+    return err
+}
+if err := mcp.RegisterTool(server, "lookup", "Ищет запись", lookup); err != nil {
+    return err
+}
+return server.Run(transport)
+~~~
+
+Первый запрос фиксирует этот каталог. Поэтому регистрацию следует держать в
+startup-коде: поздняя регистрация возвращает `mcp.ErrStarted`. Типичный обмен
+между LLM и MCP-сервером выглядит так:
+
+1. MCP-клиент отправляет `initialize` и получает capabilities сервера.
+2. Клиент запрашивает `tools/list`, `resources/list`,
+   `resources/templates/list` и `prompts/list`, если соответствующие
+   возможности объявлены.
+3. Host-приложение преобразует метаданные в контекст модели. Точный вид
+   зависит от клиента: tools могут попасть в определения функций модели,
+   prompts — в список команд, а resources могут читаться только при
+   необходимости.
+4. Модель выбирает действие в этом контексте. Она формирует вызов tool,
+   просит host прочитать resource или выбирает prompt; сама Go-функция
+   callback моделью не вызывается.
+5. Клиент отправляет соответствующий MCP-запрос. go-mcp запускает middleware,
+   сохраняет контекст запроса, проверяет и декодирует параметры и при
+   необходимости вызывает зарегистрированный handler.
+6. Клиент возвращает ответ host-приложению. Host добавляет результат или
+   сообщения prompt в диалог, после чего модель продолжает рассуждение или
+   отвечает пользователю.
+
+Иными словами, регистрация задаёт MCP-контракт сервера, клиент является
+границей протокола, а LLM — одним из потребителей метаданных и результатов.
+Модель не получает автоматически все resources и не выполняет каждый prompt:
+момент и способ их предоставления контролирует host/client.
+
+#### `RegisterResource`: стабильный контекст
+
+Используйте `RegisterResource`, когда URI известен заранее, а содержимое
+доступно одним значением. Resource — это данные, а не операция:
+
+~~~go
+err := server.RegisterResource(mcp.Resource{
+    URI:         "config://application",
+    Name:        "Конфигурация приложения",
+    Description: "Несекретные настройки runtime",
+    MIMEType:    "application/json",
+    Text:        `{"environment":"production","region":"eu"}`,
+})
+~~~
+
+В `resources/list` сервер публикует только метаданные (`uri`, `name`,
+`description` и `mimeType`). Когда клиенту нужно содержимое, он отправляет:
+
+~~~json
+{"jsonrpc":"2.0","id":7,"method":"resources/read",
+ "params":{"uri":"config://application"}}
+~~~
+
+Ответ содержит `contents` с URI, MIME type и текстом. Host может добавить этот
+текст в контекст модели, процитировать его в ответе или не показывать модели.
+`RegisterResource` подходит для схемы, README, политики или сгенерированного
+снимка, у которого должен быть один стабильный адрес. Не помещайте credentials
+и другие секреты в resource, если middleware и политика контекста host явно не
+защищают их.
+
+#### `RegisterResourceTemplate`: данные с переменными в URI
+
+Используйте `RegisterResourceTemplate`, когда один логический resource имеет
+много конкретных URI или должен вычисляться во время чтения. Шаблон публикуется
+как pattern, а callback запускается только после запроса клиента с подходящим
+URI:
+
+~~~go
+err := server.RegisterResourceTemplate(mcp.ResourceTemplate{
+    URITemplate: "record:///{id}",
+    Name:        "Запись клиента",
+    Description: "Запись клиента, выбранная по id",
+    MIMEType:    "application/json",
+    Handler: func(ctx context.Context, request mcp.ResourceRequest) (mcp.Resource, error) {
+        id := request.Variables["id"]
+        record, err := loadRecord(ctx, id)
+        if err != nil {
+            return mcp.Resource{}, err
+        }
+        return mcp.Resource{
+            URI:      request.URI,
+            Name:     "Клиент " + id,
+            MIMEType: "application/json",
+            Text:     record,
+        }, nil
+    },
+})
+~~~
+
+Текущий matcher сравнивает сегменты, разделённые slash. Placeholder вроде
+`{id}` соответствует одному сегменту; извлечённые значения передаются в
+`ResourceRequest.Variables`, а исходный URI сохраняется в
+`ResourceRequest.URI`. Callback получает контекст запроса, поэтому отмена
+может остановить медленный поиск. Проверяйте идентификаторы и права доступа в
+callback или middleware до обращения к хранилищу: URI template задаёт
+маршрутизацию, но не является правилом авторизации.
+
+Модель обычно не изобретает прямой вызов Go-callback. Она видит метаданные
+шаблона через `resources/templates/list`; host может разрешить запрос
+конкретного URI, например `record:///42`. После этого клиент отправляет
+`resources/read`, а сервер разрешает шаблон.
+
+#### `RegisterPrompt`: повторно используемый сценарий диалога
+
+Используйте `RegisterPrompt` для именованного повторяемого сценария инструкций.
+Prompt выбирается пользователем или UI host и возвращается как сообщения; это
+не tool и не императивная операция.
+
+Статический prompt хранит сообщения непосредственно в каталоге:
+
+~~~go
+err := server.RegisterPrompt(mcp.Prompt{
+    Name:        "summarize",
+    Description: "Запросить краткое резюме",
+    Arguments: []mcp.PromptArgument{
+        {Name: "style", Description: "formal или casual", Required: true},
+    },
+    Messages: []mcp.PromptMessage{
+        {Role: "user", Text: "Кратко суммируй переданный документ."},
+    },
+})
+~~~
+
+Динамический prompt использует `Handler`, чтобы формировать сообщения для
+каждого запроса `prompts/get`:
+
+~~~go
+err := server.RegisterPrompt(mcp.Prompt{
+    Name:        "review",
+    Description: "Подготовить code review",
+    Arguments: []mcp.PromptArgument{
+        {Name: "language", Description: "Язык программирования", Required: true},
+    },
+    Handler: func(ctx context.Context, arguments map[string]string) ([]mcp.PromptMessage, error) {
+        language := arguments["language"]
+        if language == "" {
+            return nil, errors.New("language is required")
+        }
+        return []mcp.PromptMessage{
+            {Role: "user", Text: "Проверь этот код на " + language + " на корректность и безопасность."},
+        }, nil
+    },
+})
+~~~
+
+`prompts/list` публикует имя, описание и метаданные аргументов. При выборе
+prompt клиент отправляет `prompts/get` со строковыми аргументами. Сервер
+возвращает сообщения с ролями и текстом; host может вставить их в диалог и
+передать управление модели. `Required` документирует ожидаемый ввод для
+клиентов, но dynamic handler всё равно должен проверять аргументы: host может
+отправить неполную map.
+
+#### `RegisterTool`: операция, которую может вызвать модель
+
+Используйте `RegisterTool` для операции с побочными эффектами, вычислением или
+внешней интеграцией. В отличие от трёх остальных API, это регистрация действия.
+Generic input/output делают wire-контракт явным:
+
+~~~go
+type LookupInput struct {
+    ID string `json:"id" mcp:"description=Идентификатор клиента"`
+}
+
+func (value *LookupInput) UnmarshalJSON(data []byte) error {
+    type alias LookupInput
+    var decoded alias
+    if err := json.Unmarshal(data, &decoded); err != nil {
+        return err
+    }
+    *value = LookupInput(decoded)
+    return nil
+}
+
+type LookupOutput struct {
+    Name  string `json:"name"`
+    Level string `json:"level"`
+}
+
+func (value *LookupOutput) MarshalJSON() ([]byte, error) {
+    type alias LookupOutput
+    return json.Marshal(alias(*value))
+}
+
+err := mcp.RegisterTool(server, "lookup", "Ищет клиента по идентификатору",
+    func(ctx context.Context, input *LookupInput) (*LookupOutput, error) {
+        return lookupCustomer(ctx, input.ID)
+    })
+~~~
+
+При регистрации go-mcp строит JSON Schema input из тегов `json` и `mcp`. В
+`tools/list` клиент получает имя tool, описание и `inputSchema`; host может
+передать эту схему модели. Тогда модель способна сформировать структурированный
+вызов:
+
+~~~json
+{"jsonrpc":"2.0","id":8,"method":"tools/call",
+ "params":{"name":"lookup","arguments":{"id":"42"}}}
+~~~
+
+Сервер декодирует JSON, запускает цепочку middleware и вызывает typed handler
+с контекстом запроса. Успешный результат возвращается одновременно в
+`structuredContent` и как JSON text content, поэтому его могут использовать
+клиенты, работающие со структурированным выводом, и клиенты, понимающие только
+текст. Ошибка декодирования или handler возвращается как безопасный tool
+result с `isError: true`; детали реализации модели не раскрываются.
+
+Модель сама решает, вызывать ли tool. Описание с условиями применимости,
+точные описания полей и осторожное описание side effects помогают ей выбрать
+операцию безопасно. Авторизация должна находиться в middleware или коде
+приложения: описание tool не является механизмом безопасности.
 
 ## 5. Typed tools и JSON Schema
 
