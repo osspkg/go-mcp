@@ -460,7 +460,11 @@ if err := server.Run(transport); err != nil {
 
 GET /sse возвращает text/event-stream и событие endpoint с URL message
 endpoint. POST /message?sessionId=... помещает ответ в SSE-очередь и использует
-text/event-stream для доставки. Сессия удаляется при разрыве клиента.
+text/event-stream для доставки. На каждую сессию создаётся буферизованный канал
+на 16 сообщений. Если канал заполнен, POST ждёт освобождения места или отмены
+своего context. Фоновый cleanup запускается при появлении первой сессии,
+проверяет TTL и закрывает истёкшие SSE-потоки; когда сессий не осталось,
+goroutine завершается. Сессия также удаляется при разрыве клиента.
 
 HTTP transport можно создать с legacy SSE на одном listener:
 

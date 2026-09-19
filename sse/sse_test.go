@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"go.osspkg.com/mcp"
 )
@@ -47,5 +48,40 @@ func TestUnitSSEEndpointAndMessage(t *testing.T) {
 	}
 	if response := <-item.messages; !strings.Contains(string(response), `"result":{}`) {
 		t.Fatalf("unexpected message: %s", response)
+	}
+}
+
+func TestUnitBackgroundSessionCleanup(t *testing.T) {
+	server, err := mcp.New(mcp.ServerInfo{Name: "test", Version: "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewHandler(server, Config{
+		SessionTTL:  20 * time.Millisecond,
+		MaxSessions: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, item, err := handler.newSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-item.done:
+	case <-time.After(time.Second):
+		t.Fatal("session was not expired by background cleanup")
+	}
+
+	handler.mu.Lock()
+	_, exists := handler.sessions[id]
+	running := handler.cleanupRunning
+	handler.mu.Unlock()
+	if exists {
+		t.Fatal("expired session remains in the session map")
+	}
+	if running {
+		t.Fatal("cleanup goroutine remains active without sessions")
 	}
 }

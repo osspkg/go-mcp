@@ -23,15 +23,18 @@ import (
 )
 
 const (
-	defaultMaxBodyBytes int64 = 1 << 20
-	defaultSessionTTL         = 30 * time.Minute
-	defaultReadTimeout        = 15 * time.Second
-	defaultWriteTimeout       = 30 * time.Second
-	defaultIdleTimeout        = 60 * time.Second
-	defaultMaxSessions        = 256
-	sessionIDBytes            = 24
-	messageQueueSize          = 16
-	shutdownTimeout           = 5 * time.Second
+	defaultMaxBodyBytes    int64 = 1 << 20
+	defaultSessionTTL            = 30 * time.Minute
+	defaultReadTimeout           = 15 * time.Second
+	defaultWriteTimeout          = 30 * time.Second
+	defaultIdleTimeout           = 60 * time.Second
+	defaultMaxSessions           = 256
+	sessionIDBytes               = 24
+	messageQueueSize             = 16
+	cleanupIntervalDivisor       = 2
+	maxCleanupInterval           = time.Minute
+	minCleanupInterval           = 10 * time.Millisecond
+	shutdownTimeout              = 5 * time.Second
 )
 
 // Config configures the legacy SSE endpoints.
@@ -83,14 +86,16 @@ func (transport *Transport) Serve(ctx context.Context, server *mcp.Server) error
 type session struct {
 	expiry   time.Time
 	messages chan []byte
+	done     chan struct{}
 }
 
 // Handler serves a legacy SSE endpoint and its message endpoint.
 type Handler struct {
-	server   *mcp.Server
-	config   Config
-	mu       sync.Mutex
-	sessions map[string]*session
+	server         *mcp.Server
+	config         Config
+	mu             sync.Mutex
+	sessions       map[string]*session
+	cleanupRunning bool
 }
 
 // NewHandler creates a legacy SSE transport handler.
@@ -156,6 +161,8 @@ func (handler *Handler) serveSSE(writer stdhttp.ResponseWriter, request *stdhttp
 		case <-request.Context().Done():
 			handler.deleteSession(id)
 			return
+		case <-item.done:
+			return
 		case response := <-item.messages:
 			_, _ = fmt.Fprintf(writer, "event: message\ndata: %s\n\n", response)
 			flusher.Flush()
@@ -200,6 +207,9 @@ func (handler *Handler) serveMessage(writer stdhttp.ResponseWriter, request *std
 	if response != nil {
 		select {
 		case item.messages <- response:
+		case <-item.done:
+			stdhttp.Error(writer, "session expired", stdhttp.StatusNotFound)
+			return
 		case <-request.Context().Done():
 			return
 		}
@@ -210,7 +220,7 @@ func (handler *Handler) serveMessage(writer stdhttp.ResponseWriter, request *std
 func (handler *Handler) newSession() (string, *session, error) {
 	handler.mu.Lock()
 	defer handler.mu.Unlock()
-	handler.expire()
+	handler.expireLocked()
 	if len(handler.sessions) >= handler.config.MaxSessions {
 		return "", nil, errors.New("session limit")
 	}
@@ -219,29 +229,71 @@ func (handler *Handler) newSession() (string, *session, error) {
 		return "", nil, err
 	}
 	id := hex.EncodeToString(raw)
-	item := &session{expiry: time.Now().Add(handler.config.SessionTTL), messages: make(chan []byte, messageQueueSize)}
+	item := &session{
+		expiry:   time.Now().Add(handler.config.SessionTTL),
+		messages: make(chan []byte, messageQueueSize),
+		done:     make(chan struct{}),
+	}
 	handler.sessions[id] = item
+	if !handler.cleanupRunning {
+		handler.cleanupRunning = true
+		go handler.cleanupLoop()
+	}
 	return id, item, nil
 }
 
 func (handler *Handler) getSession(id string) *session {
 	handler.mu.Lock()
 	defer handler.mu.Unlock()
-	handler.expire()
+	handler.expireLocked()
 	return handler.sessions[id]
 }
 
 func (handler *Handler) deleteSession(id string) {
 	handler.mu.Lock()
-	delete(handler.sessions, id)
+	if item, ok := handler.sessions[id]; ok {
+		delete(handler.sessions, id)
+		if item.done != nil {
+			close(item.done)
+		}
+	}
 	handler.mu.Unlock()
 }
 
-func (handler *Handler) expire() {
+func (handler *Handler) cleanupLoop() {
+	ticker := time.NewTicker(handler.cleanupInterval())
+	defer ticker.Stop()
+	for range ticker.C {
+		handler.mu.Lock()
+		handler.expireLocked()
+		if len(handler.sessions) == 0 {
+			handler.cleanupRunning = false
+			handler.mu.Unlock()
+			return
+		}
+		handler.mu.Unlock()
+	}
+}
+
+func (handler *Handler) cleanupInterval() time.Duration {
+	interval := handler.config.SessionTTL / cleanupIntervalDivisor
+	if interval < minCleanupInterval {
+		return minCleanupInterval
+	}
+	if interval > maxCleanupInterval {
+		return maxCleanupInterval
+	}
+	return interval
+}
+
+func (handler *Handler) expireLocked() {
 	now := time.Now()
 	for id, item := range handler.sessions {
 		if now.After(item.expiry) {
 			delete(handler.sessions, id)
+			if item.done != nil {
+				close(item.done)
+			}
 		}
 	}
 }
