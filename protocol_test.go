@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -121,6 +122,22 @@ func TestUnitRequestObserver(t *testing.T) {
 	request := <-observed
 	if request.Method != pingMethod {
 		t.Fatalf("method = %q", request.Method)
+	}
+}
+
+func TestUnitRequestObserverPanicDoesNotEscape(t *testing.T) {
+	server, err := New(ServerInfo{Name: testServerName, Version: "1"}, WithRequestObserver(func(context.Context, Request, time.Duration) {
+		panic("observer failure")
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := server.ServeJSON(t.Context(), []byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`), RequestMeta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(response, []byte(`"result":{}`)) {
+		t.Fatalf("unexpected response: %s", response)
 	}
 }
 

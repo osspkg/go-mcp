@@ -856,7 +856,8 @@ func (h *Handler) Close()
 
 `WithRequestObserver` receives each successfully parsed request after its
 handler returns, including the request duration. Observers run synchronously;
-use them for lightweight metrics and tracing hooks.
+use them for lightweight metrics and tracing hooks. A panic in an observer is
+isolated and cannot terminate request processing.
 
 Both HTTP packages export the same managed-listener helper:
 
@@ -922,9 +923,14 @@ _ = mcpClient.OnNotification("notifications/progress", progressHandler)
 ~~~
 
 The client correlates concurrent requests by JSON-RPC ID, bounds HTTP/SSE
-responses, serializes stdio writes, and cancels pending calls on transport
-shutdown. It does not provide authentication or TLS policy; configure those in
-`http.Client`, headers, or the surrounding application.
+responses, serializes stdio writes, bounds server-initiated handler concurrency
+to eight by default, and cancels pending calls on transport shutdown. Set
+`ClientConfig.MaxConcurrentHandlers` to choose a different positive bound;
+excess server requests receive an internal error and excess notifications are
+dropped. Streamable HTTP accepts both JSON and SSE POST responses. Legacy SSE
+message endpoints must remain on the configured SSE origin. The client does not
+provide authentication or TLS policy; configure those in `http.Client`, headers,
+or the surrounding application.
 
 ## 10. Configuration
 

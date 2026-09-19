@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	stdhttp "net/http"
 	"net/url"
 	"strings"
@@ -147,9 +148,19 @@ func (transport *HTTPTransport) Send(ctx context.Context, payload []byte) ([]byt
 	if sessionID != "" {
 		req.Header.Set("Mcp-Session-Id", sessionID)
 	}
-	resp, err := transport.config.Client.Do(req) //nolint:gosec // endpoint is validated by the constructor
+	resp, err := transport.config.Client.Do(req) //nolint:bodyclose,gosec // the SSE branch transfers body ownership to readResponseEvents
 	if err != nil {
 		return nil, err
+	}
+	mediaType, _, mediaTypeErr := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if mediaTypeErr == nil && mediaType == "text/event-stream" {
+		requestID := responseID(payload)
+		streamCtx, cancel := context.WithCancel(ctx)
+		go func() {
+			defer cancel()
+			_ = transport.readResponseEvents(streamCtx, resp.Body, requestID)
+		}()
+		return nil, nil
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, responseLimit(transport.config.MaxResponseBytes)))
@@ -179,6 +190,73 @@ func (transport *HTTPTransport) Send(ctx context.Context, payload []byte) ([]byt
 		}
 	}
 	return body, nil
+}
+
+func responseID(payload []byte) json.RawMessage {
+	var envelope struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if json.Unmarshal(payload, &envelope) != nil {
+		return nil
+	}
+	return envelope.ID
+}
+
+func (transport *HTTPTransport) readResponseEvents(ctx context.Context, body io.ReadCloser, requestID json.RawMessage) error {
+	defer func() { _ = body.Close() }()
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, eventScannerBuffer), scannerLimit(transport.config.MaxResponseBytes))
+	var data strings.Builder
+	flush := func() error {
+		if data.Len() == 0 {
+			return nil
+		}
+		payload := []byte(data.String())
+		data.Reset()
+		transport.mu.Lock()
+		receiver := transport.receiver
+		transport.mu.Unlock()
+		if receiver == nil {
+			return nil
+		}
+		if err := receiver(ctx, payload); err != nil {
+			return err
+		}
+		if sameResponseID(payload, requestID) {
+			return context.Canceled
+		}
+		return nil
+	}
+	for scanner.Scan() {
+		line := scanner.Text()
+		switch {
+		case line == "":
+			if err := flush(); err != nil {
+				return err
+			}
+		case strings.HasPrefix(line, "data:"):
+			value := strings.TrimPrefix(line, "data:")
+			value = strings.TrimPrefix(value, " ")
+			if data.Len() > 0 {
+				_ = data.WriteByte('\n')
+			}
+			_, _ = data.WriteString(value)
+		}
+	}
+	if err := flush(); err != nil {
+		return err
+	}
+	return scanner.Err()
+}
+
+func sameResponseID(payload []byte, requestID json.RawMessage) bool {
+	if len(requestID) == 0 {
+		return false
+	}
+	var envelope struct {
+		ID json.RawMessage `json:"id"`
+	}
+	return json.Unmarshal(payload, &envelope) == nil && bytes.Equal(envelope.ID, requestID)
 }
 
 func (transport *HTTPTransport) applyHeaders(req *stdhttp.Request) {

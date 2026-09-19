@@ -20,6 +20,8 @@ import (
 	"go.osspkg.com/mcp"
 )
 
+const defaultMaxConcurrentHandlers = 8
+
 var (
 	// ErrClosed means that the client or its transport has been closed.
 	ErrClosed = errors.New("mcp/client: client is closed")
@@ -98,10 +100,14 @@ type Implementation struct {
 	Icons       []mcp.Icon `json:"icons,omitempty"`
 }
 
-// ClientConfig configures a Client's default initialization identity.
+// ClientConfig configures a Client's default initialization identity and
+// server-initiated handler concurrency.
 type ClientConfig struct {
 	Info         Implementation
 	Capabilities map[string]any
+	// MaxConcurrentHandlers bounds simultaneously running server-initiated
+	// request and notification handlers. Non-positive values use the default.
+	MaxConcurrentHandlers int
 }
 
 // InitializeParams are sent in the initialize request.
@@ -287,6 +293,14 @@ type pendingCall struct {
 	ch chan rpcResult
 }
 
+type inboundMessage struct {
+	ctx       context.Context
+	id        json.RawMessage
+	method    string
+	params    json.RawMessage
+	isRequest bool
+}
+
 // Client is a concurrent-safe MCP JSON-RPC client.
 type Client struct {
 	transport Transport
@@ -302,6 +316,8 @@ type Client struct {
 	pending     map[string]*pendingCall
 	requests    map[string]RequestHandler
 	notifies    map[string]NotificationHandler
+	inbound     chan inboundMessage
+	workers     int
 	done        chan struct{}
 	doneOnce    sync.Once
 }
@@ -323,7 +339,10 @@ func NewWithConfig(transport Transport, config ClientConfig) (*Client, error) {
 	if config.Info.Version == "" {
 		config.Info.Version = "dev"
 	}
-	return &Client{transport: transport, config: config, pending: make(map[string]*pendingCall), requests: make(map[string]RequestHandler), notifies: make(map[string]NotificationHandler), done: make(chan struct{})}, nil
+	if config.MaxConcurrentHandlers <= 0 {
+		config.MaxConcurrentHandlers = defaultMaxConcurrentHandlers
+	}
+	return &Client{transport: transport, config: config, pending: make(map[string]*pendingCall), requests: make(map[string]RequestHandler), notifies: make(map[string]NotificationHandler), inbound: make(chan inboundMessage, config.MaxConcurrentHandlers), workers: config.MaxConcurrentHandlers, done: make(chan struct{})}, nil
 }
 
 // Start starts the transport reader and returns immediately. The transport is
@@ -349,6 +368,9 @@ func (client *Client) Start(ctx context.Context) error { //nolint:contextcheck /
 	client.ctx = transportCtx
 	client.cancel = cancel
 	client.mu.Unlock()
+	for range client.workers {
+		go client.handleInbound(transportCtx)
+	}
 	go func() {
 		err := client.transport.Start(transportCtx, client.receive)
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -766,10 +788,13 @@ func (client *Client) receive(ctx context.Context, payload []byte) error {
 			messageCtx = ctx
 		}
 		if len(envelope.ID) == 0 {
-			client.dispatchNotification(messageCtx, envelope.Method, envelope.Params)
+			client.enqueueInbound(inboundMessage{ctx: messageCtx, method: envelope.Method, params: append([]byte(nil), envelope.Params...)})
 			return nil
 		}
-		go client.dispatchRequest(messageCtx, envelope.ID, envelope.Method, envelope.Params)
+		message := inboundMessage{ctx: messageCtx, id: append([]byte(nil), envelope.ID...), method: envelope.Method, params: append([]byte(nil), envelope.Params...), isRequest: true}
+		if !client.enqueueInbound(message) && message.ctx.Err() == nil {
+			client.dispatchRequest(message.ctx, message.id, message.method, message.params, errors.New("mcp/client: handler capacity reached"))
+		}
 		return nil
 	}
 	key := string(envelope.ID)
@@ -793,19 +818,46 @@ func (client *Client) receive(ctx context.Context, payload []byte) error {
 	return nil
 }
 
+func (client *Client) enqueueInbound(message inboundMessage) bool {
+	select {
+	case <-message.ctx.Done():
+		return false
+	case client.inbound <- message:
+		return true
+	default:
+		return false
+	}
+}
+
+func (client *Client) handleInbound(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case message := <-client.inbound:
+			if ctx.Err() != nil {
+				return
+			}
+			if message.isRequest {
+				client.dispatchRequest(message.ctx, message.id, message.method, message.params, nil) //nolint:contextcheck // preserve the connection lifecycle context from receive
+				continue
+			}
+			client.dispatchNotification(message.ctx, message.method, message.params) //nolint:contextcheck // preserve the connection lifecycle context from receive
+		}
+	}
+}
+
 func (client *Client) dispatchNotification(ctx context.Context, method string, params json.RawMessage) {
 	client.mu.RLock()
 	handler := client.notifies[method]
 	client.mu.RUnlock()
 	if handler != nil {
-		go func() {
-			defer func() { _ = recover() }()
-			_ = handler(ctx, append([]byte(nil), params...))
-		}()
+		defer func() { _ = recover() }()
+		_ = handler(ctx, params)
 	}
 }
 
-func (client *Client) dispatchRequest(ctx context.Context, id json.RawMessage, method string, params json.RawMessage) {
+func (client *Client) dispatchRequest(ctx context.Context, id json.RawMessage, method string, params json.RawMessage, initialErr error) {
 	client.mu.RLock()
 	handler := client.requests[method]
 	client.mu.RUnlock()
@@ -813,16 +865,19 @@ func (client *Client) dispatchRequest(ctx context.Context, id json.RawMessage, m
 		result any
 		err    error
 	)
-	if handler == nil {
+	switch {
+	case initialErr != nil:
+		err = initialErr
+	case handler == nil:
 		err = fmt.Errorf("mcp/client: method %s is not supported", method)
-	} else {
+	default:
 		func() {
 			defer func() {
 				if recovered := recover(); recovered != nil {
 					err = fmt.Errorf("mcp/client: request handler panic: %v", recovered)
 				}
 			}()
-			result, err = handler(ctx, append([]byte(nil), params...))
+			result, err = handler(ctx, params)
 		}()
 	}
 	response := struct {

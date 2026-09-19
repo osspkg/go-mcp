@@ -118,7 +118,10 @@ func (server *Server) observe(ctx context.Context, request Request, duration tim
 	observers := append([]RequestObserver(nil), server.observers...)
 	server.mu.RUnlock()
 	for _, observer := range observers {
-		observer(ctx, request, duration)
+		func() {
+			defer func() { _ = recover() }()
+			observer(ctx, request, duration)
+		}()
 	}
 }
 

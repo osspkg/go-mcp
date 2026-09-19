@@ -129,19 +129,7 @@ func (transport *SSETransport) readStream(ctx context.Context) error {
 		data.Reset()
 		event.Reset()
 		if name == "endpoint" {
-			endpoint, err := url.Parse(string(payload))
-			if err != nil {
-				return err
-			}
-			base, err := url.Parse(transport.sseEndpoint)
-			if err != nil {
-				return err
-			}
-			transport.mu.Lock()
-			transport.messageURL = base.ResolveReference(endpoint).String()
-			transport.mu.Unlock()
-			transport.readyOnce.Do(func() { close(transport.ready) })
-			return nil
+			return transport.setMessageEndpoint(payload)
 		}
 		transport.mu.Lock()
 		receiver := transport.receiver
@@ -176,6 +164,30 @@ func (transport *SSETransport) readStream(ctx context.Context) error {
 		return err
 	}
 	return ErrTransportClosed
+}
+
+func (transport *SSETransport) setMessageEndpoint(payload []byte) error {
+	endpoint, err := url.Parse(string(payload))
+	if err != nil {
+		return err
+	}
+	base, err := url.Parse(transport.sseEndpoint)
+	if err != nil {
+		return err
+	}
+	messageURL := base.ResolveReference(endpoint)
+	if !sameOrigin(base, messageURL) {
+		return errors.New("mcp/client: SSE message endpoint must use the SSE endpoint origin")
+	}
+	transport.mu.Lock()
+	transport.messageURL = messageURL.String()
+	transport.mu.Unlock()
+	transport.readyOnce.Do(func() { close(transport.ready) })
+	return nil
+}
+
+func sameOrigin(first, second *url.URL) bool {
+	return strings.EqualFold(first.Scheme, second.Scheme) && strings.EqualFold(first.Host, second.Host)
 }
 
 // Send posts a JSON-RPC message to the session-specific message endpoint.

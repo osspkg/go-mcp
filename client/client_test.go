@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -30,6 +31,11 @@ const (
 type directTransport struct {
 	receiver Receiver
 	ready    chan struct{}
+}
+
+type recordingTransport struct {
+	directTransport
+	sent chan []byte
 }
 
 func (transport *directTransport) Ready() <-chan struct{} { return transport.ready }
@@ -57,6 +63,20 @@ func (transport *directTransport) Send(_ context.Context, payload []byte) ([]byt
 }
 
 func (transport *directTransport) Close() error { return nil }
+
+func (transport *recordingTransport) Send(ctx context.Context, payload []byte) ([]byte, error) {
+	var envelope struct {
+		Method string `json:"method"`
+	}
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		return nil, err
+	}
+	if envelope.Method == "" {
+		transport.sent <- append([]byte(nil), payload...)
+		return nil, nil
+	}
+	return transport.directTransport.Send(ctx, payload)
+}
 
 func TestUnitClientCallAndInitialize(t *testing.T) {
 	transport := &directTransport{ready: make(chan struct{})}
@@ -108,6 +128,53 @@ func TestUnitClientServerRequestHandler(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("server request handler was not called")
 	}
+}
+
+func TestUnitClientInboundHandlerLimit(t *testing.T) {
+	transport := &recordingTransport{directTransport: directTransport{ready: make(chan struct{})}, sent: make(chan []byte, 1)}
+	client, err := NewWithConfig(transport, ClientConfig{Info: Implementation{Name: "test", Version: "1"}, MaxConcurrentHandlers: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := client.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Close() }()
+	started := make(chan struct{})
+	var startedOnce sync.Once
+	finish := make(chan struct{})
+	if err := client.OnRequest("roots/list", func(context.Context, json.RawMessage) (any, error) {
+		startedOnce.Do(func() { close(started) })
+		<-finish
+		return map[string]any{"roots": []any{}}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	request := func(id string) {
+		t.Helper()
+		if err := client.receive(ctx, []byte(`{"jsonrpc":"2.0","id":"`+id+`","method":"roots/list","params":{}}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request("one")
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first handler did not start")
+	}
+	request("two")
+	request("three")
+	select {
+	case payload := <-transport.sent:
+		if !strings.Contains(string(payload), "handler capacity reached") {
+			t.Fatalf("unexpected overload response: %s", payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("missing overload response")
+	}
+	close(finish)
 }
 
 func TestUnitHTTPTransportWithLibraryServer(t *testing.T) {
@@ -218,6 +285,57 @@ func TestUnitHTTPTransportWithRoundTripper(t *testing.T) {
 		t.Fatalf("expected initialize, initialized, and ping posts; got %d", posts.Load())
 	}
 	_ = client.Close()
+}
+
+func TestUnitHTTPTransportReceivesSSEPostResponse(t *testing.T) {
+	httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		payload, err := io.ReadAll(request.Body)
+		if err != nil {
+			return nil, err
+		}
+		var incoming struct {
+			ID json.RawMessage `json:"id"`
+		}
+		if err := json.Unmarshal(payload, &incoming); err != nil {
+			return nil, err
+		}
+		response, err := json.Marshal(map[string]any{jsonRPCField: rpcVersion, "id": incoming.ID, resultField: map[string]any{}})
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("data: " + string(response) + "\n\n")), Header: http.Header{"Content-Type": []string{"text/event-stream"}}}, nil
+	})}
+	transport, err := NewHTTPTransport("http://mock.test/mcp", HTTPConfig{Client: httpClient})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := New(transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := client.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Close() }()
+	if err := client.Ping(ctx); err != nil {
+		t.Fatalf("ping through SSE POST response: %v", err)
+	}
+}
+
+func TestUnitSSETransportRejectsCrossOriginMessageEndpoint(t *testing.T) {
+	httpClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("event: endpoint\ndata: https://attacker.example/message\n\n")), Header: http.Header{"Content-Type": []string{"text/event-stream"}}}, nil
+	})}
+	transport, err := NewSSETransport("http://mock.test/sse", SSEConfig{Client: httpClient})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = transport.Start(context.Background(), func(context.Context, []byte) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "must use the SSE endpoint origin") {
+		t.Fatalf("expected cross-origin endpoint rejection, got %v", err)
+	}
 }
 
 func TestUnitCommandTransport(t *testing.T) {
