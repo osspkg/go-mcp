@@ -57,7 +57,7 @@ porting comparison.
 
 ## Task workflow
 
-1. Inspect `AGENTS.md`, `PLAN.md`, the current package API, and the relevant
+1. Inspect `AGENTS.md`, `DOC.md`, the current package API, and the relevant
    runnable example before changing behavior. Preserve unrelated worktree
    changes.
 2. Select the smallest transport-independent core change and keep transport

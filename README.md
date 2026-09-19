@@ -1,16 +1,58 @@
 # go-mcp
 
+![Go version](https://img.shields.io/badge/go-1.26%2B-00ADD8?logo=go&logoColor=white)
+[![License](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
+[![Go Reference](https://pkg.go.dev/badge/go.osspkg.com/mcp.svg)](https://pkg.go.dev/go.osspkg.com/mcp)
+
 `go-mcp` is a stdlib-only Go library for creating Model Context Protocol
 servers compatible with MCP `2025-11-25`. It supports newline-delimited stdio,
 Streamable HTTP, and legacy HTTP+SSE.
 
-## Install
+See [DOC.md](DOC.md) for the complete English API reference, lifecycle details,
+and developer use cases. A Russian version is available in
+[DOC.ru.md](DOC.ru.md).
+
+## Contents
+
+- [Features](#features)
+- [Installation](#installation)
+- [Documentation](#documentation)
+- [Quick start](#quick-start)
+- [Middleware and authorization](#middleware-and-authorization)
+- [Transports](#transports)
+- [Configuration](#configuration)
+- [Examples](#examples)
+- [Development](#development)
+- [License](#license)
+
+## Features
+
+- MCP revision 2025-11-25 and JSON-RPC 2.0.
+- Typed tools with JSON Schema generated from Go structs and tags.
+- Static and dynamic resources, resource templates, and prompts.
+- Stdio, Streamable HTTP, and legacy SSE transports.
+- Shared middleware pipeline with authorization errors mapped to protocol and
+  HTTP status codes.
+- Configuration from MCP_* environment variables or flat YAML.
+- Graceful signal-aware shutdown through Server.Run.
+
+## Installation
 
 ```bash
 go get go.osspkg.com/mcp
 ```
 
-## Typed tool
+## Documentation
+
+- [English API and developer guide](DOC.md)
+- [Russian API and developer guide](DOC.ru.md)
+- [go-mcp development skill](skills/go-mcp/SKILL.md)
+- [Runnable examples](example/README.md)
+- [MCP transport specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
+
+## Quick start
+
+### Typed tools
 
 Models implement the standard JSON interfaces. `json` tags define the wire
 name and whether a field is optional; `mcp` supplies the schema description.
@@ -40,7 +82,7 @@ _ = mcp.RegisterTool(server, "greet", "Returns a greeting",
 )
 ```
 
-## Authorization middleware
+## Middleware and authorization
 
 Middleware runs for every MCP method, including initialization and catalog
 listings. For HTTP and SSE, request headers are available through
@@ -95,6 +137,11 @@ transport := sse.NewTransport(sse.Config{
 })
 err := server.Run(transport)
 ```
+
+Each SSE session uses a bounded queue of 16 messages. Expired sessions are
+removed by a background cleanup goroutine according to `SessionTTL`; associated
+SSE streams are closed, and POST waits for queue capacity or request context
+cancellation.
 
 For one listener serving both Streamable HTTP and legacy SSE, use
 `NewTransportWithSSE`:
@@ -183,3 +230,8 @@ make lint
 make tests
 go test -race ./...
 ```
+
+## License
+
+go-mcp is distributed under the [BSD 3-Clause License](LICENSE). See the
+license file for the complete copyright and redistribution terms.

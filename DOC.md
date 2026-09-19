@@ -1,66 +1,66 @@
-# go-mcp: API и руководство разработчика
+# go-mcp: API and developer guide
 
-Статус документа: актуально для ревизии MCP 2025-11-25.
+Document status: current for MCP revision 2025-11-25.
 
-Модуль: go.osspkg.com/mcp
+Module: go.osspkg.com/mcp
 
-Библиотека реализует stdlib-only сервер Model Context Protocol с единым ядром и
-тремя транспортами: newline-delimited JSON через stdio, Streamable HTTP и
-legacy SSE. Вы регистрируете инструменты, resources и prompts, подключаете
-middleware и запускаете включённые транспорты через Run.
+go-mcp is a stdlib-only Model Context Protocol server library with one core and
+three transports: newline-delimited JSON over stdio, Streamable HTTP, and legacy
+SSE. Register tools, resources, and prompts, add middleware, and run all
+enabled transports through Run.
 
-## Содержание
+## Contents
 
-1. [Назначение и границы](#1-назначение-и-границы)
-2. [Архитектура](#2-архитектура)
-3. [Быстрый старт](#3-быстрый-старт)
-4. [Основной API пакета mcp](#4-основной-api-пакета-mcp)
-5. [Typed tools и JSON Schema](#5-typed-tools-и-json-schema)
-6. [Resources и prompts](#6-resources-и-prompts)
-7. [Middleware и авторизация](#7-middleware-и-авторизация)
-8. [JSON-RPC и методы MCP](#8-json-rpc-и-методы-mcp)
-9. [Транспорты](#9-транспорты)
-10. [Конфигурация](#10-конфигурация)
-11. [Жизненный цикл и остановка](#11-жизненный-цикл-и-остановка)
-12. [Сценарии использования](#12-сценарии-использования)
-13. [Ошибки и безопасность](#13-ошибки-и-безопасность)
-14. [Тестирование и качество](#14-тестирование-и-качество)
-15. [Связанные материалы и изменения](#15-связанные-материалы-и-изменения)
+1. [Purpose and scope](#1-purpose-and-scope)
+2. [Architecture](#2-architecture)
+3. [Quick start](#3-quick-start)
+4. [Core mcp API](#4-core-mcp-api)
+5. [Typed tools and JSON Schema](#5-typed-tools-and-json-schema)
+6. [Resources and prompts](#6-resources-and-prompts)
+7. [Middleware and authorization](#7-middleware-and-authorization)
+8. [JSON-RPC and MCP methods](#8-json-rpc-and-mcp-methods)
+9. [Transports](#9-transports)
+10. [Configuration](#10-configuration)
+11. [Lifecycle and shutdown](#11-lifecycle-and-shutdown)
+12. [Developer use cases](#12-developer-use-cases)
+13. [Errors and security](#13-errors-and-security)
+14. [Testing and quality](#14-testing-and-quality)
+15. [Related material and changes](#15-related-material-and-changes)
 
-## 1. Назначение и границы
+## 1. Purpose and scope
 
-go-mcp предназначена для разработчиков, которым нужно встроить MCP-сервер в
-CLI, локальный агент или HTTP-сервис без внешних runtime-зависимостей. go.mod
-содержит только стандартную библиотеку Go. Линтеры и инструменты разработки не
-становятся зависимостями приложения.
+Use go-mcp when you need to embed an MCP server in a CLI, local agent, or HTTP
+service without runtime dependencies outside the Go standard library. The
+go.mod file contains no third-party runtime modules; linters and development
+tools remain development-only.
 
-Поддерживаются:
+Supported features:
 
 - MCP 2025-11-25;
 - JSON-RPC 2.0;
-- tools, resources, resource templates и prompts;
-- stdio, Streamable HTTP и legacy SSE;
-- единый middleware pipeline для всех MCP-вызовов;
-- конфигурация из MCP_* или плоского YAML.
+- tools, resources, resource templates, and prompts;
+- stdio, Streamable HTTP, and legacy SSE;
+- one middleware pipeline for every MCP call;
+- configuration from MCP_* variables or flat YAML.
 
-Библиотека не включает хранилище пользователей, JWT/OAuth-провайдер,
-CORS-политику, TLS-терминацию или бизнес-логику. Эти части остаются в
-приложении или внешнем reverse proxy.
+The library does not provide a user store, JWT/OAuth provider, CORS policy, TLS
+termination, or business logic. Keep those concerns in your application or
+reverse proxy.
 
-## 2. Архитектура
+## 2. Architecture
 
-Публичные пакеты разделены по ответственности:
+Public packages are separated by responsibility:
 
-| Пакет | Назначение |
+| Package | Responsibility |
 | --- | --- |
-| mcp | сервер, реестр, JSON-RPC, typed tools, middleware, каталог MCP |
-| mcp/config | загрузка и валидация конфигурации |
+| mcp | server, registry, JSON-RPC, typed tools, middleware, MCP catalog |
+| mcp/config | configuration loading and validation |
 | mcp/stdio | newline-delimited JSON transport |
-| mcp/http | Streamable HTTP и объединение с legacy SSE |
+| mcp/http | Streamable HTTP and legacy SSE on one listener |
 | mcp/sse | legacy SSE transport |
 
-Ядро mcp не импортирует транспортные пакеты. Транспорт получает указатель на
-сервер через интерфейс:
+The mcp core does not import transport packages. A transport receives the
+server through this interface:
 
 ~~~go
 type Transport interface {
@@ -68,20 +68,19 @@ type Transport interface {
 }
 ~~~
 
-Поток запроса выглядит так:
+Request flow:
 
-1. транспорт принимает байты и формирует mcp.Request;
-2. сервер запускает middleware с контекстом запроса;
-3. JSON-RPC dispatch выбирает MCP-метод;
-4. реестр вызывает tool/resource/prompt handler;
-5. транспорт сериализует ответ и управляет соединением или сессией.
+1. the transport accepts bytes and creates an mcp.Request;
+2. the server runs middleware with the request context;
+3. JSON-RPC dispatch selects an MCP method;
+4. the registry calls a tool, resource, or prompt handler;
+5. the transport serializes the response and manages the connection or session.
 
-## 3. Быстрый старт
+## 3. Quick start
 
-Ниже приведён минимальный typed tool сервер на stdio. Модели инструмента
-являются указателями на пользовательские структуры и реализуют
-json.Unmarshaler/json.Marshaler (обычно это делает encoding/json через явные
-методы).
+The following is a minimal typed-tool server over stdio. Tool models are
+pointers to application structures and implement json.Unmarshaler/json.Marshaler
+(normally through explicit methods backed by encoding/json).
 
 ~~~go
 package main
@@ -97,8 +96,8 @@ import (
 )
 
 type AddInput struct {
-    A int `json:"a" mcp:"description=Первое слагаемое"`
-    B int `json:"b" mcp:"description=Второе слагаемое"`
+    A int `json:"a" mcp:"description=First addend"`
+    B int `json:"b" mcp:"description=Second addend"`
 }
 
 func (v *AddInput) UnmarshalJSON(data []byte) error {
@@ -125,7 +124,7 @@ func main() {
     if err != nil {
         panic(err)
     }
-    if err := mcp.RegisterTool(server, "add", "Складывает два числа",
+    if err := mcp.RegisterTool(server, "add", "Adds two numbers",
         func(_ context.Context, input *AddInput) (*AddOutput, error) {
             return &AddOutput{Result: input.A + input.B}, nil
         }); err != nil {
@@ -139,12 +138,12 @@ func main() {
 }
 ~~~
 
-Run сам создаёт контекст, который отменяется по os.Interrupt или syscall.SIGTERM.
-Если жизненный цикл принадлежит вызывающему коду, используйте RunContext.
+Run creates a context that is cancelled by os.Interrupt or syscall.SIGTERM. If
+the caller owns the lifecycle, use RunContext instead.
 
-## 4. Основной API пакета mcp
+## 4. Core mcp API
 
-### Создание сервера
+### Creating a server
 
 ~~~go
 type ServerInfo struct {
@@ -159,14 +158,14 @@ func New(info ServerInfo, options ...Option) (*Server, error)
 func WithMiddleware(middleware ...Middleware) Option
 ~~~
 
-Name и Version обязательны. Instructions передаются клиенту в ответе
-initialize. WithMiddleware сохраняет порядок аргументов: первый middleware в
-списке получает запрос первым.
+Name and Version are required. Instructions are returned to the client during
+initialize. WithMiddleware preserves argument order: the first middleware in
+the list receives the request first.
 
-New возвращает ошибку для пустых обязательных полей, nil option или nil
-middleware. Сервер не готовит транспорт сам: транспорт передаётся в Run.
+New returns an error for empty required fields, a nil option, or nil middleware.
+The server does not create a transport by itself; pass transports to Run.
 
-### Запрос и обработчик
+### Requests and handlers
 
 ~~~go
 type RequestMeta struct {
@@ -185,11 +184,11 @@ type Handler func(context.Context, Request) (any, error)
 type Middleware func(Handler) Handler
 ~~~
 
-RequestMeta.Transport имеет значение stdio, http или sse. HTTP и SSE передают
-копию входящих заголовков и идентификатор MCP-сессии. Middleware может получить
-метод из Request.Method, а отмену — из context.Context.
+RequestMeta.Transport is stdio, http, or sse. HTTP and SSE pass a copy of
+incoming headers and the MCP session identifier. Middleware can read the method
+from Request.Method and cancellation from context.Context.
 
-### Прямой JSON-RPC вызов
+### Direct JSON-RPC calls
 
 ~~~go
 func (s *Server) ServeJSON(
@@ -199,14 +198,14 @@ func (s *Server) ServeJSON(
 ) ([]byte, error)
 ~~~
 
-Метод удобен для собственного транспорта и тестов. Он разбирает один JSON-RPC
-запрос, применяет тот же registry и middleware pipeline, что и штатные
-транспорты. Некорректный JSON получает parse error JSON-RPC; неизвестный метод,
-неверные параметры и ошибки handler кодируются безопасными ошибками протокола.
+Use ServeJSON for a custom transport or tests. It parses one JSON-RPC request
+and applies the same registry and middleware pipeline as the built-in
+transports. Invalid JSON produces a JSON-RPC parse error; unknown methods,
+invalid parameters, and handler errors are encoded as safe protocol errors.
 
-### Каталог и фиксация реестра
+### Catalog and registry sealing
 
-Методы регистрации:
+Registration methods:
 
 ~~~go
 func (s *Server) RegisterResource(resource Resource) error
@@ -214,14 +213,14 @@ func (s *Server) RegisterResourceTemplate(template ResourceTemplate) error
 func (s *Server) RegisterPrompt(prompt Prompt) error
 ~~~
 
-Имена tools/prompts и URI ресурсов должны быть уникальными в своей категории.
-При первом запросе реестр фиксируется. После этого регистрация возвращает
-ErrStarted; это позволяет безопасно обслуживать запросы конкурентно и
-гарантирует стабильные ответы */list.
+Tool and prompt names, and resource URIs, must be unique within their
+categories. The first request seals the registry. Later registrations return
+ErrStarted. This makes concurrent serving safe and keeps */list responses
+stable.
 
-## 5. Typed tools и JSON Schema
+## 5. Typed tools and JSON Schema
 
-Основной API инструмента — generic-функция:
+The primary tool API is a generic function:
 
 ~~~go
 type ToolHandler[In json.Unmarshaler, Out json.Marshaler] func(
@@ -237,31 +236,31 @@ func RegisterTool[In json.Unmarshaler, Out json.Marshaler](
 ) error
 ~~~
 
-In и Out должны быть указателями на структуры приложения. Обязательное условие
-— методы UnmarshalJSON у входа и MarshalJSON у результата. Это делает
-контракт явным и позволяет валидировать JSON-кодек при регистрации.
+In and Out must be pointers to application structures. The input must provide
+UnmarshalJSON and the output must provide MarshalJSON. This makes the contract
+explicit and lets registration validate the JSON codec.
 
-JSON Schema строится из полей и тегов:
+JSON Schema is built from fields and tags:
 
-| Запись | Результат |
+| Entry | Result |
 | --- | --- |
-| `json:"user_id"` | имя свойства user_id |
-| `json:"name,omitempty"` | необязательное свойство name |
-| `json:"name"` | обязательное свойство name |
-| `json:"-"` | поле исключается |
-| `mcp:"description=..."` | описание свойства |
+| `json:"user_id"` | property name user_id |
+| `json:"name,omitempty"` | optional property name |
+| `json:"name"` | required property name |
+| `json:"-"` | field is omitted |
+| `mcp:"description=..."` | property description |
 
-Поддерживаются scalar-типы, указатели, вложенные структуры, slices и arrays.
-Неподдерживаемый тип или некорректный тег отклоняется до запуска сервера.
+Scalar types, pointers, nested structures, slices, and arrays are supported.
+Unsupported types and malformed tags fail during registration.
 
-Успешный результат tools/call содержит сериализованный output в
-structuredContent и JSON text content. Ошибка декодирования входа или
-handler-ошибка возвращается как результат инструмента с isError: true; в
-текст не попадают внутренние детали реализации.
+A successful tools/call response contains the serialized output in
+structuredContent and in JSON text content. Input decoding and handler errors
+become a tool result with isError: true; internal implementation details are
+not exposed in the text.
 
-## 6. Resources и prompts
+## 6. Resources and prompts
 
-### Статический и динамический resource
+### Static and dynamic resources
 
 ~~~go
 type Resource struct {
@@ -280,8 +279,8 @@ type ResourceRequest struct {
 type ResourceHandler func(context.Context, ResourceRequest) (Resource, error)
 ~~~
 
-Статический resource регистрируется заполненным Text. Для вычисляемого
-содержимого задайте ResourceTemplate:
+Register a static resource with Text populated. For computed content, use a
+ResourceTemplate:
 
 ~~~go
 type ResourceTemplate struct {
@@ -293,10 +292,10 @@ type ResourceTemplate struct {
 }
 ~~~
 
-Шаблоны используют slash-сегменты и именованные placeholders вида
-file:///{path}; один placeholder соответствует одному сегменту URI. При
-resources/read сервер передаёт разобранные значения в Variables. URI и имя
-обязательны, template обязан иметь handler.
+Templates use slash-separated segments and named placeholders such as
+file:///{path}; one placeholder matches one URI segment. During resources/read,
+the server passes extracted values in Variables. URI and Name are required, and
+the template must have a Handler.
 
 ### Prompts
 
@@ -323,14 +322,14 @@ type Prompt struct {
 }
 ~~~
 
-Для статического prompt задайте Messages. Для динамического задайте Handler;
-callback получает аргументы prompts/get и может вернуть разные сообщения для
-каждого запроса. Нельзя создать prompt без messages и handler.
+For a static prompt, set Messages. For a dynamic prompt, set Handler; the
+callback receives prompts/get arguments and can return different messages per
+request. A prompt must have either Messages or Handler.
 
-## 7. Middleware и авторизация
+## 7. Middleware and authorization
 
-Middleware применяется к initialize, discovery-методам и вызовам каталога
-одинаково на всех транспортах. Пример bearer-проверки:
+Middleware runs for initialize, discovery methods, and catalog calls on every
+transport. A bearer-token check can look like this:
 
 ~~~go
 func requireToken(next mcp.Handler) mcp.Handler {
@@ -345,45 +344,45 @@ func requireToken(next mcp.Handler) mcp.Handler {
 server, err := mcp.New(info, mcp.WithMiddleware(requireToken))
 ~~~
 
-Проверяйте также req.Meta.Transport, req.Meta.SessionID и собственные
-заголовки. Middleware обязан уважать отмену контекста и не должен писать ответ
-самостоятельно.
+You can also check req.Meta.Transport, req.Meta.SessionID, and application
+headers. Middleware must respect context cancellation and must not write the
+response itself.
 
-| Ошибка handler | JSON-RPC code | HTTP status |
+| Handler error | JSON-RPC code | HTTP status |
 | --- | ---: | ---: |
 | mcp.ErrUnauthorized | -32001 | 401 |
 | mcp.ErrForbidden | -32003 | 403 |
-| прочая ошибка | -32603 или безопасная tool error | 200/500 по контексту |
+| other error | -32603 or safe tool error | 200/500 depending on context |
 
-Для stdio эти ошибки остаются JSON-RPC ошибками; HTTP/SSE добавляют
-соответствующий статус, не раскрывая секреты.
+For stdio, these remain JSON-RPC errors. HTTP and SSE add the corresponding
+status without disclosing secrets.
 
-## 8. JSON-RPC и методы MCP
+## 8. JSON-RPC and MCP methods
 
-Поддерживаемые методы:
+Supported methods:
 
-| Метод | Назначение |
+| Method | Purpose |
 | --- | --- |
-| initialize | handshake, protocol version, capabilities и server info |
-| ping | проверка доступности |
-| tools/list | список зарегистрированных tools и input schema |
-| tools/call | запуск typed tool |
-| resources/list | статические resources |
+| initialize | handshake, protocol version, capabilities, and server info |
+| ping | availability check |
+| tools/list | registered tools and input schemas |
+| tools/call | invoke a typed tool |
+| resources/list | static resources |
 | resources/templates/list | URI templates |
-| resources/read | чтение статического или динамического resource |
-| prompts/list | список prompts и аргументов |
-| prompts/get | получение сообщений prompt |
+| resources/read | read a static or dynamic resource |
+| prompts/list | prompts and arguments |
+| prompts/get | retrieve prompt messages |
 
-Ответ initialize объявляет protocol version 2025-11-25 и capabilities
-tools/resources/prompts. Неизвестный метод получает -32601, неверные параметры
-— -32602, некорректный JSON — -32700. JSON-RPC notification без id не требует
-ответа.
+The initialize response declares protocol version 2025-11-25 and tools,
+resources, and prompts capabilities. Unknown methods receive -32601, invalid
+parameters receive -32602, and malformed JSON receives -32700. A JSON-RPC
+notification without an id does not require a response.
 
-## 9. Транспорты
+## 9. Transports
 
 ### Stdio
 
-Пакет go.osspkg.com/mcp/stdio:
+Package go.osspkg.com/mcp/stdio:
 
 ~~~go
 transport := stdio.NewTransport(os.Stdin, os.Stdout)
@@ -392,21 +391,20 @@ if err := server.Run(transport); err != nil {
 }
 ~~~
 
-Если transport не нужно сохранять как значение, тот же цикл можно запустить
-функцией:
+Each stdin line is one JSON-RPC object, and each stdout line is one response.
+The scanner limit is 1 MiB. Protocol data goes only to stdout; write
+diagnostics to stderr. On context cancellation, the transport closes the input
+when it implements io.Closer.
+
+If you do not need to keep the transport value, use:
 
 ~~~go
 err := stdio.Serve(ctx, server, os.Stdin, os.Stdout)
 ~~~
 
-Каждая строка stdin — один JSON-RPC объект, каждая строка stdout — ответ.
-Лимит строки — 1 MiB. Протокольные данные идут только в stdout; диагностику
-пишите в stderr. При отмене контекста transport закрывает вход, если он
-реализует io.Closer.
-
 ### Streamable HTTP
 
-Пакет go.osspkg.com/mcp/http (обычно импортируется как mcphttp):
+Package go.osspkg.com/mcp/http (usually imported as mcphttp):
 
 ~~~go
 transport := mcphttp.NewTransport(mcphttp.Config{
@@ -418,12 +416,12 @@ if err := server.Run(transport); err != nil {
 }
 ~~~
 
-POST на /mcp принимает application/json. На initialize создаётся
-Mcp-Session-Id; последующие запросы должны передавать тот же заголовок.
-Поддерживаются ограничения тела, TTL и максимальное число сессий, read/write/
-idle timeout и graceful shutdown. CORS не добавляется автоматически.
+POST /mcp accepts application/json. initialize creates an Mcp-Session-Id;
+subsequent requests must send the same header. The transport supports body
+limits, session TTL and maximum sessions, read/write/idle timeouts, and graceful
+shutdown. CORS is not enabled by default.
 
-Для встраивания в существующий mux используйте:
+To mount the handler in an existing mux:
 
 ~~~go
 handler, err := mcphttp.NewHandler(server, mcphttp.DefaultConfig())
@@ -433,7 +431,7 @@ if err != nil {
 http.Handle("/mcp", handler)
 ~~~
 
-Для запуска обычного net/http.Server доступен helper mcphttp.Server:
+For a standard net/http.Server, use mcphttp.Server:
 
 ~~~go
 srv := mcphttp.Server(ctx, mcphttp.ServerConfig{
@@ -445,8 +443,8 @@ err := srv.ListenAndServe()
 
 ### Legacy SSE
 
-Пакет go.osspkg.com/mcp/sse сохраняет совместимость с клиентами, которым
-нужны GET /sse и POST /message:
+Package go.osspkg.com/mcp/sse keeps compatibility with clients that require
+GET /sse and POST /message:
 
 ~~~go
 transport := sse.NewTransport(sse.Config{
@@ -458,15 +456,11 @@ if err := server.Run(transport); err != nil {
 }
 ~~~
 
-GET /sse возвращает text/event-stream и событие endpoint с URL message
-endpoint. POST /message?sessionId=... помещает ответ в SSE-очередь и использует
-text/event-stream для доставки. На каждую сессию создаётся буферизованный канал
-на 16 сообщений. Если канал заполнен, POST ждёт освобождения места или отмены
-своего context. Фоновый cleanup запускается при появлении первой сессии,
-проверяет TTL и закрывает истёкшие SSE-потоки; когда сессий не осталось,
-goroutine завершается. Сессия также удаляется при разрыве клиента.
+GET /sse returns text/event-stream and an endpoint event with the message URL.
+POST /message?sessionId=... places the response in the SSE queue. The session
+is removed when the client disconnects.
 
-HTTP transport можно создать с legacy SSE на одном listener:
+HTTP can serve Streamable HTTP and legacy SSE on one listener:
 
 ~~~go
 transport := mcphttp.NewTransportWithSSE(
@@ -475,7 +469,13 @@ transport := mcphttp.NewTransportWithSSE(
 )
 ~~~
 
-Полные настройки HTTP transport:
+Each SSE session has a buffered queue of 16 messages. If it is full, POST waits
+until the SSE reader consumes an item or the request context is cancelled.
+A background cleanup goroutine checks the session TTL, removes expired
+sessions, and closes their SSE streams. It starts when the first session is
+created and stops after the last session is removed.
+
+Full HTTP transport settings:
 
 ~~~go
 type Config struct {
@@ -495,8 +495,7 @@ func NewTransportWithSSE(config Config, legacy sse.Config) *Transport
 func NewHandler(server *mcp.Server, config Config) (*Handler, error)
 ~~~
 
-Для SSE поля Config совпадают с HTTP и дополнительно содержат SSEPath и
-MessagePath:
+SSE Config has the same fields and additionally SSEPath and MessagePath:
 
 ~~~go
 type Config struct {
@@ -516,7 +515,7 @@ func NewTransport(config Config) *Transport
 func NewHandler(server *mcp.Server, config Config) (*Handler, error)
 ~~~
 
-Оба HTTP-пакета экспортируют одинаковый helper для управляемого listener:
+Both HTTP packages export the same managed-listener helper:
 
 ~~~go
 import stdhttp "net/http"
@@ -532,39 +531,39 @@ type ServerConfig struct {
 func Server(ctx context.Context, config ServerConfig) *stdhttp.Server
 ~~~
 
-Server возвращает обычный net/http.Server; вы сами вызываете ListenAndServe,
-а библиотека вызывает Shutdown после отмены context.
+Server returns a regular net/http.Server. You call ListenAndServe; the library
+calls Shutdown when the context is cancelled.
 
-## 10. Конфигурация
+## 10. Configuration
 
-Пакет go.osspkg.com/mcp/config поддерживает два взаимоисключающих источника.
-Выберите один loader и затем передайте результат в Transports.
+Package go.osspkg.com/mcp/config supports two mutually exclusive sources.
+Choose one loader and pass the result to Transports.
 
 ~~~go
 cfg, err := config.LoadEnv()
-// или: cfg, err := config.LoadYAML("mcp.yaml")
+// or: cfg, err := config.LoadYAML("mcp.yaml")
 if err != nil {
     log.Fatal(err)
 }
 transports, err := config.Transports(cfg, server, os.Stdin, os.Stdout)
 ~~~
 
-Ключевые поля config.Config:
+Key config.Config fields:
 
-| Поле | Назначение |
+| Field | Purpose |
 | --- | --- |
-| Name, Version, Instructions | identity и handshake |
-| EnableStdio, EnableHTTP, EnableSSE | включение транспортов |
-| HTTPAddress | адрес HTTP listener |
+| Name, Version, Instructions | identity and handshake |
+| EnableStdio, EnableHTTP, EnableSSE | enable transports |
+| HTTPAddress | HTTP listener address |
 | MCPPath, SSEPath, MessagePath | URL paths |
-| ReadTimeout, WriteTimeout, IdleTimeout | сетевые таймауты |
-| MaxBodyBytes | лимит JSON body |
-| SessionTTL, MaxSessions | параметры сессий |
+| ReadTimeout, WriteTimeout, IdleTimeout | network timeouts |
+| MaxBodyBytes | JSON body limit |
+| SessionTTL, MaxSessions | session settings |
 
-config.Default() включает stdio, задаёт :8080, /mcp, /sse, /message, лимит body
-1 MiB, TTL 30 минут и максимум 256 сессий.
+config.Default() enables stdio and sets :8080, /mcp, /sse, /message, a 1 MiB
+body limit, a 30-minute TTL, and a maximum of 256 sessions.
 
-Полная сигнатура конфигурации:
+Full configuration signature:
 
 ~~~go
 type Config struct {
@@ -597,12 +596,12 @@ func Transports(
 ) ([]mcp.Transport, error)
 ~~~
 
-Если stdio включён, input и output должны быть непустыми. При включённых HTTP
-и SSE Transports создаёт один HTTP listener с обоими наборами endpoints.
+When stdio is enabled, input and output must be non-nil. When HTTP and SSE are
+both enabled, Transports creates one HTTP listener with both endpoint sets.
 
 ### Environment
 
-LoadEnv читает только известные ключи MCP_*, например:
+LoadEnv reads only known MCP_* variables:
 
 ~~~text
 MCP_NAME=calculator
@@ -615,12 +614,12 @@ MCP_MAX_BODY_BYTES=1048576
 MCP_SESSION_TTL=30m
 ~~~
 
-Неизвестный ключ, пустое обязательное значение или неверное bool, integer или
-duration возвращает ошибку.
+An unknown key, an empty required value, or an invalid boolean, integer, or
+duration returns an error.
 
 ### YAML
 
-LoadYAML намеренно принимает только плоские scalar-записи:
+LoadYAML intentionally accepts only flat scalar entries:
 
 ~~~yaml
 name: calculator
@@ -631,14 +630,14 @@ http_address: ":9090"
 session_ttl: 30m
 ~~~
 
-Вложенные maps, списки, anchors и неизвестные поля отклоняются. Это упрощает
-валидацию и предотвращает неоднозначное слияние конфигурации.
+Nested maps, lists, anchors, and unknown fields are rejected. This keeps
+validation deterministic and prevents ambiguous configuration merging.
 
-## 11. Жизненный цикл и остановка
+## 11. Lifecycle and shutdown
 
-### Сигналы по умолчанию
+### Default signal handling
 
-Server.Run(transports ...) инкапсулирует:
+Server.Run(transports ...) encapsulates:
 
 ~~~go
 ctx, stop := signal.NotifyContext(
@@ -650,14 +649,14 @@ defer stop()
 return server.run(ctx, transports...)
 ~~~
 
-Таким образом, Ctrl-C или SIGTERM отменяет общий контекст, после чего каждый
-transport прекращает принимать новые запросы, закрывает активные сессии и
-возвращает управление. Не создавайте второй signal handler вокруг Run, если вам
-достаточно стандартного поведения.
+Ctrl-C or SIGTERM cancels the shared context. Each transport then stops
+accepting new requests, closes active sessions, and returns. Do not install a
+second signal handler around Run unless your application needs different
+behavior.
 
-### Управляемый контекст
+### Caller-owned context
 
-Для embedding и тестов используйте:
+Use RunContext for embedding and tests:
 
 ~~~go
 ctx, cancel := context.WithCancel(context.Background())
@@ -667,57 +666,56 @@ go func() {
     _ = server.RunContext(ctx, transport)
 }()
 
-// ... работа приложения ...
+// ... application work ...
 cancel() // graceful shutdown
 ~~~
 
-RunContext не устанавливает signal handler и уважает отмену вызывающего кода.
-Для HTTP helper Server(ctx, config) shutdown вызывается автоматически; период
-graceful shutdown ограничен пятью секундами.
+RunContext does not install a signal handler and follows the caller's
+cancellation policy. For the HTTP helper Server(ctx, config), shutdown starts
+automatically and the graceful-shutdown period is limited to five seconds.
 
-## 12. Сценарии использования
+## 12. Developer use cases
 
-### 12.1 Локальный CLI-агент
+### 12.1 Local CLI agent
 
-Используйте stdio, когда MCP-клиент запускает бинарник как дочерний процесс.
-Оставьте EnableStdio=true, пишите логи только в stderr и регистрируйте
-маленькие idempotent tools. Такой вариант не требует открытого порта и
-аутентифицирует доступ границей процесса.
+Use stdio when the MCP client launches your binary as a child process. Keep
+EnableStdio=true, write logs only to stderr, and register small idempotent
+tools. This mode needs no open port and uses the process boundary as its
+access-control boundary.
 
-### 12.2 Удалённый HTTP-сервис
+### 12.2 Remote HTTP service
 
-Включите Streamable HTTP, задайте явный HTTPAddress, MaxBodyBytes, таймауты и
-middleware авторизации. Размещайте TLS и rate limiting на reverse proxy, а
-внутри handler проверяйте bearer/session claims.
+Enable Streamable HTTP, set an explicit HTTPAddress, MaxBodyBytes, timeouts, and
+authorization middleware. Terminate TLS and apply rate limiting at a reverse
+proxy; validate bearer or session claims in middleware and handlers.
 
-### 12.3 Legacy-клиент с SSE
+### 12.3 Legacy SSE client
 
-Создайте NewTransportWithSSE, если часть клиентов ещё использует SSE. Пути
-/mcp, /sse и /message должны быть различны. Ограничьте MaxSessions и
-SessionTTL, чтобы отключившиеся браузеры не занимали память.
+Create NewTransportWithSSE when some clients still require SSE. Keep /mcp, /sse,
+and /message distinct. Set MaxSessions and SessionTTL so disconnected browser
+clients cannot retain resources indefinitely.
 
-### 12.4 Динамические данные
+### 12.4 Dynamic data
 
-Регистрируйте ResourceTemplate для файлов, документов или tenant-scoped данных.
-Из ResourceRequest.Variables извлекайте только значения, соответствующие
-шаблону, а доступ проверяйте middleware и внутри handler.
+Register ResourceTemplate for files, documents, or tenant-scoped data. Extract
+only variables matched by the template, and enforce access in middleware and
+inside the handler.
 
-### 12.5 Контекстные подсказки
+### 12.5 Contextual prompts
 
-Используйте dynamic Prompt.Handler, когда сообщения зависят от аргументов,
-пользователя или текущего состояния приложения. Не храните секреты в
-PromptMessage: prompt возвращается MCP-клиенту.
+Use Prompt.Handler when messages depend on arguments, the user, or current
+application state. Do not put secrets in PromptMessage: the prompt is returned
+to the MCP client.
 
-### 12.6 Встраивание в существующий сервер
+### 12.6 Embedding in an existing server
 
-Используйте NewHandler и зарегистрируйте его в собственном http.ServeMux, если
-приложение уже управляет listener, TLS и health endpoints. Для полного
-контроля остановки передайте собственный context через RunContext либо
-используйте mcphttp.Server(ctx, ...).
+Use NewHandler and register it in your own http.ServeMux when the application
+already owns the listener, TLS, and health endpoints. For full lifecycle
+control, pass your context through RunContext or use mcphttp.Server(ctx, ...).
 
-## 13. Ошибки и безопасность
+## 13. Errors and security
 
-Публичные sentinel errors:
+Public sentinel errors:
 
 ~~~go
 var (
@@ -727,20 +725,20 @@ var (
 )
 ~~~
 
-Рекомендации:
+Recommendations:
 
-- ограничивайте HTTP body и SSE message body;
-- задавайте конечные read/write/idle timeout;
-- проверяйте авторизацию до чтения чувствительных resources;
-- не возвращайте stack trace или токены из handler errors;
-- не включайте CORS без явного списка origins;
-- используйте URI template только после валидации path и tenant;
-- не пишите отладочные данные в stdout stdio transport;
-- передавайте ctx во внешние операции и немедленно обрабатывайте отмену.
+- limit HTTP and SSE message bodies;
+- set finite read, write, and idle timeouts;
+- authorize before reading sensitive resources;
+- never return stack traces or tokens from handler errors;
+- do not enable CORS without an explicit origin list;
+- validate URI-template paths and tenant values;
+- never write diagnostics to stdio stdout;
+- pass ctx to external operations and handle cancellation immediately.
 
-## 14. Тестирование и качество
+## 14. Testing and quality
 
-В репозитории предусмотрены:
+The repository provides:
 
 ~~~text
 make lint
@@ -748,32 +746,36 @@ make tests
 go test -race ./...
 ~~~
 
-make lint проверяет форматирование, vet и статический анализ. make tests
-запускает модульные и интеграционные тесты. Race-тест обязателен для изменений
-реестра, сессий, shutdown и конкурентных handler-вызовов.
+make lint checks formatting, vet, and static analysis. make tests runs unit and
+integration tests. Race testing is required for changes to the registry,
+sessions, shutdown, or concurrent handlers.
 
-Для собственного инструмента тестируйте:
+For your own tool, test:
 
-- schema и required-поля typed tool;
-- duplicate names и попытку регистрации после старта;
-- middleware для stdio, HTTP и SSE;
-- malformed JSON-RPC, unknown method и invalid params;
-- 401/403, body limits и неверный session id;
-- отмену handler context и graceful shutdown;
-- content type, SSE endpoint event и закрытие клиента.
+- typed-tool schemas and required fields;
+- duplicate names and registration after startup;
+- middleware over stdio, HTTP, and SSE;
+- malformed JSON-RPC, unknown methods, and invalid parameters;
+- 401/403, body limits, and invalid session IDs;
+- handler context cancellation and graceful shutdown;
+- content types, the SSE endpoint event, and client disconnects.
 
-## 15. Связанные материалы и изменения
+## 15. Related material and changes
 
-- [README.md](README.md) — краткий обзор и минимальные примеры.
-- [example/README.md](example/README.md) — готовые приложения stdio, HTTP,
-  SSE, middleware и конфигурации.
-- [PLAN.md](PLAN.md) — архитектурный план и декомпозиция задач.
-- [AGENTS.md](AGENTS.md) — правила разработки и обязательные проверки.
+- [README.md](README.md) — concise overview and minimal examples.
+- [DOC.ru.md](DOC.ru.md) — Russian API reference.
+- [example/README.md](example/README.md) — runnable stdio, HTTP, SSE,
+  middleware, and configuration examples.
+- [AGENTS.md](AGENTS.md) — development rules and required checks.
+- [skills/go-mcp/SKILL.md](skills/go-mcp/SKILL.md) — AI-assisted development
+  workflow and API/lifecycle/configuration references.
 - [MCP transport specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
-  — нормативное описание транспортов.
+  — normative transport behavior.
+- [LICENSE](LICENSE) — BSD 3-Clause License.
 
-### Changelog документации
+### Documentation changelog
 
-| Дата | Изменение |
+| Date | Change |
 | --- | --- |
-| 2026-09-19 | Добавлено подробное API-описание, сценарии использования и lifecycle guidance. |
+| 2026-09-19 | Added the English API reference and developer use cases. |
+| 2026-09-19 | Added background cleanup for expired SSE sessions and their streams. |

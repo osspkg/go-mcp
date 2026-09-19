@@ -1,7 +1,7 @@
-# Примеры go-mcp
+# go-mcp examples
 
-Каждый каталог содержит самостоятельный `main.go` и запускается без внешних
-зависимостей:
+Each directory contains a standalone `main.go` and runs without external
+dependencies:
 
 ```bash
 go run ./example/stdio
@@ -12,21 +12,21 @@ go run ./example/config-env
 go run ./example/config-yaml -- example/config-yaml/server.yaml
 ```
 
-## Примеры
+## Examples
 
-- `stdio` — newline-delimited JSON-RPC через stdin/stdout.
-- `http` — Streamable HTTP на `POST /mcp`.
-- `sse` — legacy SSE на `/sse` и `/message`.
-- `middleware` — проверка заголовка `Authorization`.
-- `config-env` — конфигурация из переменных `MCP_*`.
-- `config-yaml` — конфигурация из плоского YAML-файла.
+- `stdio` — newline-delimited JSON-RPC over stdin/stdout.
+- `http` — Streamable HTTP on `POST /mcp`.
+- `sse` — legacy SSE on `/sse` and `/message`.
+- `middleware` — `Authorization` header validation.
+- `config-env` — configuration from `MCP_*` environment variables.
+- `config-yaml` — configuration from a flat YAML file.
 
-Все серверы запускаются через `server.Run(transports...)`. Остановка по
-`os.Interrupt` или `SIGTERM` выполняется библиотекой автоматически.
+All servers run through `server.Run(transports...)`. The library automatically
+handles shutdown on `os.Interrupt` or `SIGTERM`.
 
-Для env-примера, например, можно включить HTTP вместо stdio:
+For example, enable HTTP instead of stdio for the environment configuration
+example:
 
 ```bash
 MCP_ENABLE_STDIO=false MCP_ENABLE_HTTP=true go run ./example/config-env
 ```
-
