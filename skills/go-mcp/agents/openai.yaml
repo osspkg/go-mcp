@@ -1,0 +1,4 @@
+interface:
+  display_name: "go-mcp"
+  short_description: "Build MCP servers in Go"
+  default_prompt: "Use $go-mcp to build or maintain an MCP server with the repository's transports and lifecycle."

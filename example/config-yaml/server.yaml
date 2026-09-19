@@ -1,0 +1,9 @@
+name: yaml-example
+version: 1.0.0
+enable_stdio: false
+enable_http: true
+http_address: ":8080"
+mcp_path: /mcp
+max_body_bytes: 1048576
+session_ttl: 30m
+max_sessions: 128
