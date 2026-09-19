@@ -27,6 +27,15 @@ func (output *testOutput) MarshalJSON() ([]byte, error) {
 	return json.Marshal((*plain)(output))
 }
 
+type recursiveInput struct {
+	Next *recursiveInput `json:"next,omitempty"`
+}
+
+func (input *recursiveInput) UnmarshalJSON(data []byte) error {
+	type plain recursiveInput
+	return json.Unmarshal(data, (*plain)(input))
+}
+
 func TestUnitRegisterToolAndCall(t *testing.T) {
 	server, err := New(ServerInfo{Name: "test", Version: "1"})
 	if err != nil {
@@ -101,6 +110,72 @@ func TestUnitRejectsRegistrationAfterRequest(t *testing.T) {
 	if !errors.Is(err, ErrStarted) {
 		t.Fatalf("got %v, want ErrStarted", err)
 	}
+}
+
+func TestUnitRegisterToolRejectsRecursiveInput(t *testing.T) {
+	server, err := New(ServerInfo{Name: "test", Version: "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = RegisterTool(server, "recursive", "", func(_ context.Context, _ *recursiveInput) (*testOutput, error) {
+		return &testOutput{}, nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "recursive Go type") {
+		t.Fatalf("got %v, want recursive type error", err)
+	}
+}
+
+func TestUnitRegisterPromptCopiesSlices(t *testing.T) {
+	server, err := New(ServerInfo{Name: "test", Version: "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	arguments := []PromptArgument{{Name: "name"}}
+	messages := []PromptMessage{{Role: "user", Text: "original"}}
+	if err := server.RegisterPrompt(Prompt{Name: "welcome", Arguments: arguments, Messages: messages}); err != nil {
+		t.Fatal(err)
+	}
+	arguments[0].Name = "changed"
+	messages[0].Text = "changed"
+
+	response, err := server.ServeJSON(t.Context(), []byte(`{"jsonrpc":"2.0","id":1,"method":"prompts/get","params":{"name":"welcome"}}`), RequestMeta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(response), "original") || strings.Contains(string(response), "changed") {
+		t.Fatalf("prompt changed after registration: %s", response)
+	}
+	listing, err := server.ServeJSON(t.Context(), []byte(`{"jsonrpc":"2.0","id":2,"method":"prompts/list"}`), RequestMeta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(listing), `"name":"name"`) || strings.Contains(string(listing), `"name":"changed"`) {
+		t.Fatalf("prompt arguments changed after registration: %s", listing)
+	}
+
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				arguments[0].Name = "changed"
+				messages[0].Text = "changed"
+			}
+		}
+	}()
+	for range 100 {
+		if _, err := server.ServeJSON(t.Context(), []byte(`{"jsonrpc":"2.0","id":3,"method":"prompts/list"}`), RequestMeta{}); err != nil {
+			close(done)
+			<-stopped
+			t.Fatal(err)
+		}
+	}
+	close(done)
+	<-stopped
 }
 
 type testTransport func(context.Context, *Server) error

@@ -66,19 +66,34 @@ func (transport *Transport) Serve(ctx context.Context, server *mcp.Server) error
 	if transport == nil {
 		return errors.New("mcp/sse: nil transport")
 	}
+	if ctx == nil {
+		return errors.New("mcp/sse: nil context")
+	}
 	handler, err := NewHandler(server, transport.Config)
 	if err != nil {
 		return err
 	}
+	defer handler.Close()
 	config := transport.Config
 	defaults := DefaultConfig()
 	if config.Address == "" {
 		config.Address = defaults.Address
 	}
-	httpServer := Server(ctx, ServerConfig{Address: config.Address, Handler: handler, ReadTimeout: config.ReadTimeout, WriteTimeout: config.WriteTimeout, IdleTimeout: config.IdleTimeout})
+	if config.ReadTimeout <= 0 {
+		config.ReadTimeout = defaults.ReadTimeout
+	}
+	if config.WriteTimeout <= 0 {
+		config.WriteTimeout = defaults.WriteTimeout
+	}
+	if config.IdleTimeout <= 0 {
+		config.IdleTimeout = defaults.IdleTimeout
+	}
+	serveCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	httpServer := Server(serveCtx, ServerConfig{Address: config.Address, Handler: handler, ReadTimeout: config.ReadTimeout, WriteTimeout: config.WriteTimeout, IdleTimeout: config.IdleTimeout})
 	err = httpServer.ListenAndServe()
 	if errors.Is(err, stdhttp.ErrServerClosed) {
-		return ctx.Err()
+		return serveCtx.Err()
 	}
 	return err
 }
@@ -96,6 +111,9 @@ type Handler struct {
 	mu             sync.Mutex
 	sessions       map[string]*session
 	cleanupRunning bool
+	closed         bool
+	shutdown       chan struct{}
+	closeOnce      sync.Once
 }
 
 // NewHandler creates a legacy SSE transport handler.
@@ -119,7 +137,25 @@ func NewHandler(server *mcp.Server, config Config) (*Handler, error) {
 	if config.MaxSessions <= 0 {
 		config.MaxSessions = defaults.MaxSessions
 	}
-	return &Handler{server: server, config: config, sessions: map[string]*session{}}, nil
+	return &Handler{server: server, config: config, sessions: map[string]*session{}, shutdown: make(chan struct{})}, nil
+}
+
+// Close terminates every active SSE session and stops background cleanup.
+func (handler *Handler) Close() {
+	if handler == nil {
+		return
+	}
+	handler.closeOnce.Do(func() {
+		close(handler.shutdown)
+		handler.mu.Lock()
+		handler.closed = true
+		for id, item := range handler.sessions {
+			delete(handler.sessions, id)
+			close(item.done)
+		}
+		handler.cleanupRunning = false
+		handler.mu.Unlock()
+	})
 }
 
 // ServeHTTP implements net/http.Handler.
@@ -220,6 +256,9 @@ func (handler *Handler) serveMessage(writer stdhttp.ResponseWriter, request *std
 func (handler *Handler) newSession() (string, *session, error) {
 	handler.mu.Lock()
 	defer handler.mu.Unlock()
+	if handler.closed {
+		return "", nil, errors.New("handler closed")
+	}
 	handler.expireLocked()
 	if len(handler.sessions) >= handler.config.MaxSessions {
 		return "", nil, errors.New("session limit")
@@ -263,7 +302,12 @@ func (handler *Handler) deleteSession(id string) {
 func (handler *Handler) cleanupLoop() {
 	ticker := time.NewTicker(handler.cleanupInterval())
 	defer ticker.Stop()
-	for range ticker.C {
+	for {
+		select {
+		case <-handler.shutdown:
+			return
+		case <-ticker.C:
+		}
 		handler.mu.Lock()
 		handler.expireLocked()
 		if len(handler.sessions) == 0 {
@@ -317,9 +361,13 @@ type ServerConfig struct {
 	IdleTimeout  time.Duration
 }
 
-// Server creates an HTTP server that is shut down when ctx is cancelled.
+// Server creates an HTTP server that is shut down when a non-nil ctx is cancelled.
+// A nil context leaves shutdown under the caller's control.
 func Server(ctx context.Context, config ServerConfig) *stdhttp.Server {
 	server := &stdhttp.Server{Addr: config.Address, Handler: config.Handler, ReadTimeout: config.ReadTimeout, WriteTimeout: config.WriteTimeout, IdleTimeout: config.IdleTimeout}
+	if ctx == nil {
+		return server
+	}
 	go func() {
 		<-ctx.Done()
 		shutdownContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)

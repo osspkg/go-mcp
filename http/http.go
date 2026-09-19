@@ -70,6 +70,9 @@ func (transport *Transport) Serve(ctx context.Context, server *mcp.Server) error
 	if transport == nil {
 		return errors.New("mcp/http: nil transport")
 	}
+	if ctx == nil {
+		return errors.New("mcp/http: nil context")
+	}
 	handler, err := NewHandler(server, transport.Config)
 	if err != nil {
 		return err
@@ -82,8 +85,18 @@ func (transport *Transport) Serve(ctx context.Context, server *mcp.Server) error
 	if config.Path == "" {
 		config.Path = defaults.Path
 	}
+	if config.ReadTimeout <= 0 {
+		config.ReadTimeout = defaults.ReadTimeout
+	}
+	if config.WriteTimeout <= 0 {
+		config.WriteTimeout = defaults.WriteTimeout
+	}
+	if config.IdleTimeout <= 0 {
+		config.IdleTimeout = defaults.IdleTimeout
+	}
 	mux := stdhttp.NewServeMux()
 	mux.Handle(config.Path, handler)
+	var legacy *sse.Handler
 	if transport.LegacySSE != nil {
 		legacyConfig := *transport.LegacySSE
 		legacyDefaults := sse.DefaultConfig()
@@ -93,17 +106,23 @@ func (transport *Transport) Serve(ctx context.Context, server *mcp.Server) error
 		if legacyConfig.MessagePath == "" {
 			legacyConfig.MessagePath = legacyDefaults.MessagePath
 		}
-		legacy, legacyErr := sse.NewHandler(server, legacyConfig)
+		var legacyErr error
+		legacy, legacyErr = sse.NewHandler(server, legacyConfig)
 		if legacyErr != nil {
 			return legacyErr
 		}
 		mux.Handle(legacyConfig.SSEPath, legacy)
 		mux.Handle(legacyConfig.MessagePath, legacy)
 	}
-	httpServer := Server(ctx, ServerConfig{Address: config.Address, Handler: mux, ReadTimeout: config.ReadTimeout, WriteTimeout: config.WriteTimeout, IdleTimeout: config.IdleTimeout})
+	if legacy != nil {
+		defer legacy.Close()
+	}
+	serveCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	httpServer := Server(serveCtx, ServerConfig{Address: config.Address, Handler: mux, ReadTimeout: config.ReadTimeout, WriteTimeout: config.WriteTimeout, IdleTimeout: config.IdleTimeout})
 	err = httpServer.ListenAndServe()
 	if errors.Is(err, stdhttp.ErrServerClosed) {
-		return ctx.Err()
+		return serveCtx.Err()
 	}
 	return err
 }
@@ -179,7 +198,7 @@ func (handler *Handler) ServeHTTP(writer stdhttp.ResponseWriter, request *stdhtt
 		stdhttp.Error(writer, "internal error", stdhttp.StatusInternalServerError)
 		return
 	}
-	if isInitialize(payload) && sessionID == "" {
+	if sessionID == "" && isInitialize(payload) {
 		sessionID, err = handler.newSession()
 		if err != nil {
 			stdhttp.Error(writer, "session capacity reached", stdhttp.StatusServiceUnavailable)
@@ -253,9 +272,13 @@ type ServerConfig struct {
 	IdleTimeout  time.Duration
 }
 
-// Server returns an HTTP server that shuts down when ctx is cancelled.
+// Server returns an HTTP server that shuts down when a non-nil ctx is cancelled.
+// A nil context leaves shutdown under the caller's control.
 func Server(ctx context.Context, config ServerConfig) *stdhttp.Server {
 	server := &stdhttp.Server{Addr: config.Address, Handler: config.Handler, ReadTimeout: config.ReadTimeout, WriteTimeout: config.WriteTimeout, IdleTimeout: config.IdleTimeout}
+	if ctx == nil {
+		return server
+	}
 	go func() {
 		<-ctx.Done()
 		shutdownContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)

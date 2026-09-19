@@ -204,7 +204,10 @@ func (server *Server) readResource(ctx context.Context, params json.RawMessage) 
 	}
 	server.mu.RLock()
 	item, static := server.resources[input.URI]
-	templates := append([]ResourceTemplate(nil), server.templates...)
+	var templates []ResourceTemplate
+	if !static {
+		templates = append([]ResourceTemplate(nil), server.templates...)
+	}
 	server.mu.RUnlock()
 	if !static {
 		for _, template := range templates {

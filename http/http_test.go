@@ -47,3 +47,13 @@ func TestUnitHandlerSessionAndAuthorization(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestUnitServerAcceptsNilContext(t *testing.T) {
+	server := Server(nil, ServerConfig{})
+	if server == nil {
+		t.Fatal("nil server")
+	}
+	if err := server.Close(); err != nil {
+		t.Fatal(err)
+	}
+}

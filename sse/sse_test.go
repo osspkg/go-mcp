@@ -85,3 +85,37 @@ func TestUnitBackgroundSessionCleanup(t *testing.T) {
 		t.Fatal("cleanup goroutine remains active without sessions")
 	}
 }
+
+func TestUnitHandlerCloseStopsSessions(t *testing.T) {
+	server, err := mcp.New(mcp.ServerInfo{Name: "test", Version: "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewHandler(server, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, item, err := handler.newSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler.Close()
+	select {
+	case <-item.done:
+	default:
+		t.Fatal("Close did not terminate the session")
+	}
+	if _, _, err := handler.newSession(); err == nil {
+		t.Fatal("new session accepted after Close")
+	}
+}
+
+func TestUnitServerAcceptsNilContext(t *testing.T) {
+	server := Server(nil, ServerConfig{})
+	if server == nil {
+		t.Fatal("nil server")
+	}
+	if err := server.Close(); err != nil {
+		t.Fatal(err)
+	}
+}

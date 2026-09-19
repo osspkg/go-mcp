@@ -141,7 +141,8 @@ err := server.Run(transport)
 Each SSE session uses a bounded queue of 16 messages. Expired sessions are
 removed by a background cleanup goroutine according to `SessionTTL`; associated
 SSE streams are closed, and POST waits for queue capacity or request context
-cancellation.
+cancellation. Transport shutdown also closes active SSE sessions and stops the
+cleanup goroutine.
 
 For one listener serving both Streamable HTTP and legacy SSE, use
 `NewTransportWithSSE`:

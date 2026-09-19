@@ -710,6 +710,9 @@ text/event-stream для доставки. На каждую сессию соз
 своего context. Фоновый cleanup запускается при появлении первой сессии,
 проверяет TTL и закрывает истёкшие SSE-потоки; когда сессий не осталось,
 goroutine завершается. Сессия также удаляется при разрыве клиента.
+При остановке transport все активные сессии закрываются и cleanup завершается
+сразу. Если SSE handler смонтирован в HTTP server приложения, вызовите `Close`,
+когда он больше не нужен.
 
 HTTP transport можно создать с legacy SSE на одном listener:
 
@@ -759,6 +762,7 @@ type Config struct {
 func DefaultConfig() Config
 func NewTransport(config Config) *Transport
 func NewHandler(server *mcp.Server, config Config) (*Handler, error)
+func (h *Handler) Close()
 ~~~
 
 Оба HTTP-пакета экспортируют одинаковый helper для управляемого listener:
@@ -778,7 +782,8 @@ func Server(ctx context.Context, config ServerConfig) *stdhttp.Server
 ~~~
 
 Server возвращает обычный net/http.Server; вы сами вызываете ListenAndServe,
-а библиотека вызывает Shutdown после отмены context.
+а библиотека вызывает Shutdown после отмены непустого context. При nil context
+остановкой управляет вызывающий код.
 
 ## 10. Конфигурация
 
@@ -1025,3 +1030,4 @@ make lint проверяет форматирование, vet и статиче
 | --- | --- |
 | 2026-09-19 | Для SSE добавлена фоновая очистка истёкших сессий и завершение связанных потоков. |
 | 2026-09-19 | Добавлено подробное API-описание, сценарии использования и lifecycle guidance. |
+| 2026-09-19 | Закрытие SSE handler теперь немедленно завершает активные сессии и cleanup. |

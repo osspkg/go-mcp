@@ -116,6 +116,8 @@ func (server *Server) RegisterPrompt(prompt Prompt) error {
 	if _, exists := server.prompts[prompt.Name]; exists {
 		return fmt.Errorf("mcp: duplicate prompt %q", prompt.Name)
 	}
+	prompt.Arguments = append([]PromptArgument(nil), prompt.Arguments...)
+	prompt.Messages = append([]PromptMessage(nil), prompt.Messages...)
 	server.prompts[prompt.Name] = prompt
 	return nil
 }

@@ -50,6 +50,9 @@ semantics as `Run`; it does not install process-global signal handlers.
   graceful-shutdown budget after their context is cancelled. New connections
   stop while active requests are given time to complete.
 - An SSE client disconnect cancels the request context and removes its session.
+- Transport shutdown closes all remaining SSE sessions and stops their cleanup
+  goroutine. Call `(*sse.Handler).Close` when a standalone handler is removed
+  from an application-owned HTTP server.
 
 Do not call `http.ListenAndServe` in a sample that claims to demonstrate the
 managed lifecycle; use the transport adapter and `Run`. Direct `Serve` or

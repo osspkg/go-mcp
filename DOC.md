@@ -718,7 +718,9 @@ Each SSE session has a buffered queue of 16 messages. If it is full, POST waits
 until the SSE reader consumes an item or the request context is cancelled.
 A background cleanup goroutine checks the session TTL, removes expired
 sessions, and closes their SSE streams. It starts when the first session is
-created and stops after the last session is removed.
+created and stops after the last session is removed. Transport shutdown closes
+active sessions and stops cleanup immediately. Call `Close` when an SSE handler
+is mounted in an application-owned HTTP server and is no longer needed.
 
 Full HTTP transport settings:
 
@@ -758,6 +760,7 @@ type Config struct {
 func DefaultConfig() Config
 func NewTransport(config Config) *Transport
 func NewHandler(server *mcp.Server, config Config) (*Handler, error)
+func (h *Handler) Close()
 ~~~
 
 Both HTTP packages export the same managed-listener helper:
@@ -777,7 +780,8 @@ func Server(ctx context.Context, config ServerConfig) *stdhttp.Server
 ~~~
 
 Server returns a regular net/http.Server. You call ListenAndServe; the library
-calls Shutdown when the context is cancelled.
+calls Shutdown when a non-nil context is cancelled. A nil context leaves
+shutdown under the caller's control.
 
 ## 10. Configuration
 
@@ -1024,3 +1028,4 @@ For your own tool, test:
 | --- | --- |
 | 2026-09-19 | Added the English API reference and developer use cases. |
 | 2026-09-19 | Added background cleanup for expired SSE sessions and their streams. |
+| 2026-09-19 | Closing an SSE handler now terminates active sessions and cleanup immediately. |

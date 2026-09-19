@@ -188,10 +188,10 @@ func schemaFor(value reflect.Type) (map[string]any, error) {
 	if value.Kind() != reflect.Pointer || value.Elem().Kind() != reflect.Struct {
 		return nil, errors.New("model must be a pointer to struct")
 	}
-	return schemaForStruct(value.Elem())
+	return schemaForType(value, map[reflect.Type]bool{})
 }
 
-func schemaForStruct(value reflect.Type) (map[string]any, error) {
+func schemaForStruct(value reflect.Type, visiting map[reflect.Type]bool) (map[string]any, error) {
 	properties := map[string]any{}
 	required := []string{}
 	for index := range value.NumField() {
@@ -207,7 +207,7 @@ func schemaForStruct(value reflect.Type) (map[string]any, error) {
 		if name == "" {
 			name = field.Name
 		}
-		property, err := schemaForType(field.Type)
+		property, err := schemaForType(field.Type, visiting)
 		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", field.Name, err)
 		}
@@ -230,7 +230,7 @@ func schemaForStruct(value reflect.Type) (map[string]any, error) {
 	return schema, nil
 }
 
-func schemaForType(value reflect.Type) (map[string]any, error) {
+func schemaForType(value reflect.Type, visiting map[reflect.Type]bool) (map[string]any, error) {
 	for value.Kind() == reflect.Pointer {
 		value = value.Elem()
 	}
@@ -244,10 +244,20 @@ func schemaForType(value reflect.Type) (map[string]any, error) {
 	case reflect.Float32, reflect.Float64:
 		return map[string]any{"type": "number"}, nil
 	case reflect.Slice, reflect.Array:
-		items, err := schemaForType(value.Elem())
+		if visiting[value] {
+			return nil, fmt.Errorf("recursive Go type %s", value)
+		}
+		visiting[value] = true
+		defer delete(visiting, value)
+		items, err := schemaForType(value.Elem(), visiting)
 		return map[string]any{"type": "array", "items": items}, err
 	case reflect.Struct:
-		return schemaForStruct(value)
+		if visiting[value] {
+			return nil, fmt.Errorf("recursive Go type %s", value)
+		}
+		visiting[value] = true
+		defer delete(visiting, value)
+		return schemaForStruct(value, visiting)
 	default:
 		return nil, fmt.Errorf("unsupported Go type %s", value)
 	}
