@@ -8,33 +8,18 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log"
 
 	"go.osspkg.com/mcp"
+	"go.osspkg.com/mcp/example/model"
 	mcphttp "go.osspkg.com/mcp/http"
 )
 
-type secretInput struct {
-	Question string `json:"question" mcp:"description=Question for the protected tool"`
-}
-
-// UnmarshalJSON decodes the typed tool input.
-func (input *secretInput) UnmarshalJSON(data []byte) error {
-	type plain secretInput
-	return json.Unmarshal(data, (*plain)(input))
-}
-
-type secretOutput struct {
-	Answer string `json:"answer"`
-}
-
-// MarshalJSON encodes the typed tool output.
-func (output *secretOutput) MarshalJSON() ([]byte, error) {
-	type plain secretOutput
-	return json.Marshal((*plain)(output))
-}
+type (
+	secretInput  = model.SecretInput
+	secretOutput = model.SecretOutput
+)
 
 func requireToken(next mcp.Handler) mcp.Handler {
 	return func(ctx context.Context, request mcp.Request) (any, error) {

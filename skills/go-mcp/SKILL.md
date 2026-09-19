@@ -1,6 +1,6 @@
 ---
 name: go-mcp
-description: Build, extend, test, and document stdlib-only MCP servers with go.osspkg.com/mcp across stdio, Streamable HTTP, and legacy SSE.
+description: Build, extend, test, and document MCP servers with go.osspkg.com/mcp across stdio, Streamable HTTP, and legacy SSE.
 metadata:
   short-description: Work with the go-mcp server library
 ---
@@ -14,7 +14,7 @@ porting comparison.
 
 ## Non-negotiable constraints
 
-- Runtime code and `go.mod` remain standard-library-only. Do not add YAML,
+- Generated model serialization uses `github.com/mailru/easyjson`; all other runtime code remains standard-library-only. Do not add YAML,
   HTTP, JSON-RPC, logging, or signal dependencies; the repository implements
   those boundaries with the standard library.
 - Target MCP revision is `2025-11-25`. Streamable HTTP is the primary remote

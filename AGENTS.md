@@ -2,7 +2,7 @@
 
 ## Project status and purpose
 
-go-mcp is a stdlib-only Go library for building MCP servers compatible with MCP
+go-mcp is a Go library for building MCP servers compatible with MCP
 revision 2025-11-25. The public module is `go.osspkg.com/mcp` and the runtime
 packages must not add third-party dependencies.
 
@@ -42,7 +42,7 @@ The documentation set is intentionally split by audience:
 
 ## Non-negotiable runtime rules
 
-- Keep runtime code and `go.mod` standard-library-only.
+- Keep runtime dependencies limited to `github.com/mailru/easyjson` for generated model serialization; all other runtime code remains standard-library-only.
 - Keep the `mcp` core independent from `mcp/stdio`, `mcp/http`, and `mcp/sse`.
 - Target MCP revision 2025-11-25 unless a task explicitly changes the
   compatibility target.
@@ -93,7 +93,7 @@ The documentation set is intentionally split by audience:
 | `http/` | Streamable HTTP and combined HTTP/SSE listener |
 | `sse/` | legacy SSE sessions, queue, and cleanup |
 | `config/` | env/YAML parsing and transport assembly |
-| `example/` | buildable, dependency-free sample servers |
+| `example/` | buildable sample servers and generated models |
 | `skills/go-mcp/` | reusable agent skill, references, and examples |
 | `README.md` / `DOC*.md` | user documentation |
 

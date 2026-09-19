@@ -10,36 +10,9 @@ import (
 	"time"
 )
 
-type testInput struct {
-	Name string `json:"name" mcp:"description=person name"`
-}
-
-func (input *testInput) UnmarshalJSON(data []byte) error {
-	type plain testInput
-	return json.Unmarshal(data, (*plain)(input))
-}
-
-type testOutput struct {
-	Greeting string `json:"greeting"`
-}
-
-func (output *testOutput) MarshalJSON() ([]byte, error) {
-	type plain testOutput
-	return json.Marshal((*plain)(output))
-}
-
-type recursiveInput struct {
-	Next *recursiveInput `json:"next,omitempty"`
-}
-
 const pingMethod = "ping"
 
 const testServerName = "test"
-
-func (input *recursiveInput) UnmarshalJSON(data []byte) error {
-	type plain recursiveInput
-	return json.Unmarshal(data, (*plain)(input))
-}
 
 func TestUnitRegisterToolAndCall(t *testing.T) {
 	server, err := New(ServerInfo{Name: testServerName, Version: "1"})

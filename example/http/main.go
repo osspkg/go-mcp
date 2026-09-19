@@ -8,33 +8,18 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log"
 
 	"go.osspkg.com/mcp"
+	"go.osspkg.com/mcp/example/model"
 	mcphttp "go.osspkg.com/mcp/http"
 )
 
-type timeInput struct {
-	Timezone string `json:"timezone,omitempty" mcp:"description=Timezone to include in the response"`
-}
-
-// UnmarshalJSON decodes the typed tool input.
-func (input *timeInput) UnmarshalJSON(data []byte) error {
-	type plain timeInput
-	return json.Unmarshal(data, (*plain)(input))
-}
-
-type timeOutput struct {
-	Message string `json:"message"`
-}
-
-// MarshalJSON encodes the typed tool output.
-func (output *timeOutput) MarshalJSON() ([]byte, error) {
-	type plain timeOutput
-	return json.Marshal((*plain)(output))
-}
+type (
+	timeInput  = model.TimeInput
+	timeOutput = model.TimeOutput
+)
 
 func main() {
 	server, err := mcp.New(mcp.ServerInfo{Name: "http-example", Version: "1.0.0"})

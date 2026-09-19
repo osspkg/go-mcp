@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2026 Mikhail Knyazhev <markus621@yandex.com>. All rights reserved.
- * Use of this source code is governed by a BSD 3-Clause license that can be found in the LICENSE file.
+ *  Copyright (c) 2026 Mikhail Knyazhev <markus621@yandex.com>. All rights reserved.
+ *  Use of this source code is governed by a BSD 3-Clause license that can be found in the LICENSE file.
  */
 
 // Package client implements a stdlib-only MCP client for servers using the
@@ -144,44 +144,18 @@ type ToolsListResult struct {
 	NextCursor string `json:"nextCursor,omitempty"`
 }
 
-// Content is one MCP content block. The fields cover the standard blocks and
-// retain extension fields in Extra.
-type Content struct {
-	Type     string         `json:"type"`
-	Text     string         `json:"text,omitempty"`
-	Data     string         `json:"data,omitempty"`
-	MIMEType string         `json:"mimeType,omitempty"`
-	URL      string         `json:"url,omitempty"`
-	Extra    map[string]any `json:"-"`
-}
+//go:generate go run github.com/mailru/easyjson/easyjson -output_filename=client_easyjson.go client.go
 
-// UnmarshalJSON preserves fields that are not part of the standard content
-// block types.
-func (content *Content) UnmarshalJSON(data []byte) error {
-	type alias Content
-	var decoded struct {
-		alias
-		Extra map[string]json.RawMessage
-	}
-	if err := json.Unmarshal(data, &decoded.alias); err != nil {
-		return err
-	}
-	if err := json.Unmarshal(data, &decoded.Extra); err != nil {
-		return err
-	}
-	content.Type, content.Text, content.Data = decoded.Type, decoded.Text, decoded.Data
-	content.MIMEType, content.URL = decoded.MIMEType, decoded.URL
-	content.Extra = make(map[string]any, len(decoded.Extra))
-	for key, raw := range decoded.Extra {
-		if key == "type" || key == "text" || key == "data" || key == "mimeType" || key == "url" {
-			continue
-		}
-		var value any
-		if err := json.Unmarshal(raw, &value); err == nil {
-			content.Extra[key] = value
-		}
-	}
-	return nil
+// Content is one MCP content block.
+//
+//easyjson:json
+//nolint:recvcheck // easyjson generates json.Marshaler on a value and json.Unmarshaler on a pointer.
+type Content struct {
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	Data     string `json:"data,omitempty"`
+	MIMEType string `json:"mimeType,omitempty"`
+	URL      string `json:"url,omitempty"`
 }
 
 // CallToolResult is the result of tools/call.

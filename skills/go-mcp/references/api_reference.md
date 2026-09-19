@@ -13,10 +13,10 @@ APIs. The module path is `go.osspkg.com/mcp` and the supported MCP revision is
 | `mcp/http` | Streamable HTTP handler and transport at `/mcp` by default |
 | `mcp/sse` | Legacy HTTP+SSE transport at `/sse` and `/message` by default |
 | `mcp/config` | Flat env/YAML configuration and transport assembly |
-| `mcp/client` | Stdlib-only client core plus stdio, Streamable HTTP, and SSE transports |
+| `mcp/client` | Client core plus stdio, Streamable HTTP, and SSE transports |
 
 The root package must not import transport packages. Runtime dependencies are
-stdlib-only.
+standard-library-based except for generated easyjson model serialization.
 
 ## Server construction and registration
 
@@ -71,22 +71,16 @@ Check each registration error; do not ignore duplicate or validation failures.
 structs implementing the standard JSON interfaces:
 
 ```go
+//go:generate go run github.com/mailru/easyjson/easyjson models.go
+
+//easyjson:json
 type Input struct {
 	Name string `json:"name" mcp:"description=Person name"`
 }
 
-func (value *Input) UnmarshalJSON(data []byte) error {
-	type plain Input
-	return json.Unmarshal(data, (*plain)(value))
-}
-
+//easyjson:json
 type Output struct {
 	Greeting string `json:"greeting"`
-}
-
-func (value *Output) MarshalJSON() ([]byte, error) {
-	type plain Output
-	return json.Marshal((*plain)(value))
 }
 
 err := mcp.RegisterTool(server, "greet", "Returns a greeting",

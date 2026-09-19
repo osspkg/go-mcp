@@ -4,7 +4,7 @@ Document status: current for MCP revision 2025-11-25.
 
 Module: go.osspkg.com/mcp
 
-go-mcp is a stdlib-only Model Context Protocol server library with one core and
+go-mcp is a Model Context Protocol server library with one core and
 three transports: newline-delimited JSON over stdio, Streamable HTTP, and legacy
 SSE. Register tools, resources, and prompts, add middleware, and run all
 enabled transports through Run.
@@ -32,9 +32,9 @@ enabled transports through Run.
 ## 1. Purpose and scope
 
 Use go-mcp when you need to embed an MCP server in a CLI, local agent, or HTTP
-service without runtime dependencies outside the Go standard library. The
-go.mod file contains no third-party runtime modules; linters and development
-tools remain development-only.
+service. Generated model serializers use `github.com/mailru/easyjson`; all
+other runtime code uses the standard library. Linters and development tools
+remain development-only.
 
 Supported features:
 
@@ -60,7 +60,7 @@ Public packages are separated by responsibility:
 | mcp/stdio | newline-delimited JSON transport |
 | mcp/http | Streamable HTTP and legacy SSE on one listener |
 | mcp/sse | legacy SSE transport |
-| mcp/client | stdlib-only MCP client and client transports |
+| mcp/client | MCP client and client transports |
 
 The mcp core does not import transport packages. A transport receives the
 server through this interface:
@@ -98,28 +98,17 @@ import (
     "go.osspkg.com/mcp/stdio"
 )
 
+//go:generate go run github.com/mailru/easyjson/easyjson models.go
+
+//easyjson:json
 type AddInput struct {
     A int `json:"a" mcp:"description=First addend"`
     B int `json:"b" mcp:"description=Second addend"`
 }
 
-func (v *AddInput) UnmarshalJSON(data []byte) error {
-    type alias AddInput
-    var value alias
-    if err := json.Unmarshal(data, &value); err != nil {
-        return err
-    }
-    *v = AddInput(value)
-    return nil
-}
-
+//easyjson:json
 type AddOutput struct {
     Result int `json:"result"`
-}
-
-func (v *AddOutput) MarshalJSON() ([]byte, error) {
-    type alias AddOutput
-    return json.Marshal(alias(*v))
 }
 
 func main() {
@@ -440,28 +429,15 @@ represents an action. The generic input and output types make the wire
 contract explicit:
 
 ~~~go
+//easyjson:json
 type LookupInput struct {
     ID string `json:"id" mcp:"description=Customer identifier"`
 }
 
-func (value *LookupInput) UnmarshalJSON(data []byte) error {
-    type alias LookupInput
-    var decoded alias
-    if err := json.Unmarshal(data, &decoded); err != nil {
-        return err
-    }
-    *value = LookupInput(decoded)
-    return nil
-}
-
+//easyjson:json
 type LookupOutput struct {
     Name  string `json:"name"`
     Level string `json:"level"`
-}
-
-func (value *LookupOutput) MarshalJSON() ([]byte, error) {
-    type alias LookupOutput
-    return json.Marshal(alias(*value))
 }
 
 err := mcp.RegisterTool(server, "lookup", "Find a customer by identifier",
@@ -543,9 +519,10 @@ func RegisterTool[In json.Unmarshaler, Out json.Marshaler](
 ) error
 ~~~
 
-In and Out must be pointers to application structures. The input must provide
-UnmarshalJSON and the output must provide MarshalJSON. This makes the contract
-explicit and lets registration validate the JSON codec.
+In and Out must be pointers to application structures. Mark model types with
+`//easyjson:json` and generate their standard `UnmarshalJSON` and `MarshalJSON`
+methods with easyjson. This makes the contract explicit and lets registration
+validate the JSON codec.
 
 JSON Schema is built from fields and tags:
 
@@ -881,7 +858,7 @@ shutdown under the caller's control.
 
 ### 9.5 MCP client
 
-`go.osspkg.com/mcp/client` is a stdlib-only client that can connect to every
+`go.osspkg.com/mcp/client` is a client that can connect to every
 transport implemented by this repository. Create a transport, create a
 `client.Client`, start it with a lifecycle context, and complete the MCP
 handshake before catalog calls:
@@ -1177,6 +1154,7 @@ For your own tool, test:
 | --- | --- |
 | 2026-09-19 | Added lazy child-process startup for stdio clients with context-bound termination and stderr isolation. |
 | 2026-09-19 | Added the stdlib-only MCP client package and runnable client example for stdio, Streamable HTTP, and legacy SSE. |
+| 2026-09-19 | Replaced handwritten model JSON methods with generated easyjson serializers. |
 | 2026-09-19 | Added the English API reference and developer use cases. |
 | 2026-09-19 | Added background cleanup for expired SSE sessions and their streams. |
 | 2026-09-19 | Closing an SSE handler now terminates active sessions and cleanup immediately. |

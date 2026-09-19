@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
 [![Go Reference](https://pkg.go.dev/badge/go.osspkg.com/mcp.svg)](https://pkg.go.dev/go.osspkg.com/mcp)
 
-`go-mcp` is a stdlib-only Go library for creating Model Context Protocol
+`go-mcp` is a Go library for creating Model Context Protocol
 servers compatible with MCP `2025-11-25`. It supports newline-delimited stdio,
 Streamable HTTP, and legacy HTTP+SSE.
 
@@ -60,25 +60,19 @@ go get go.osspkg.com/mcp
 
 ### Typed tools
 
-Models implement the standard JSON interfaces. `json` tags define the wire
+Generate standard JSON interfaces with easyjson. `json` tags define the wire
 name and whether a field is optional; `mcp` supplies the schema description.
 
 ```go
+//go:generate go run github.com/mailru/easyjson/easyjson models.go
+
+//easyjson:json
 type greetingInput struct {
 	Name string `json:"name" mcp:"description=Name to greet"`
 }
 
-func (v *greetingInput) UnmarshalJSON(data []byte) error {
-	type plain greetingInput
-	return json.Unmarshal(data, (*plain)(v))
-}
-
+//easyjson:json
 type greetingOutput struct { Greeting string `json:"greeting"` }
-
-func (v *greetingOutput) MarshalJSON() ([]byte, error) {
-	type plain greetingOutput
-	return json.Marshal((*plain)(v))
-}
 
 server, _ := mcp.New(mcp.ServerInfo{Name: "greetings", Version: "1.0.0"})
 _ = mcp.RegisterTool(server, "greet", "Returns a greeting",
@@ -202,7 +196,7 @@ err := server.RunContext(ctx, transport)
 
 ## Client
 
-The `go.osspkg.com/mcp/client` package is a stdlib-only client for all three
+The `go.osspkg.com/mcp/client` package is a client for all three
 transports. It performs the MCP handshake, lists and calls tools, reads
 resources, renders prompts, polls Tasks, and dispatches server-initiated
 requests to registered handlers.

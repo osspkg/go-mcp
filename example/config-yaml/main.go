@@ -8,34 +8,19 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log"
 	"os"
 
 	"go.osspkg.com/mcp"
 	"go.osspkg.com/mcp/config"
+	"go.osspkg.com/mcp/example/model"
 )
 
-type configInput struct {
-	Value string `json:"value" mcp:"description=Value to echo"`
-}
-
-// UnmarshalJSON decodes the typed tool input.
-func (input *configInput) UnmarshalJSON(data []byte) error {
-	type plain configInput
-	return json.Unmarshal(data, (*plain)(input))
-}
-
-type configOutput struct {
-	Value string `json:"value"`
-}
-
-// MarshalJSON encodes the typed tool output.
-func (output *configOutput) MarshalJSON() ([]byte, error) {
-	type plain configOutput
-	return json.Marshal((*plain)(output))
-}
+type (
+	configInput  = model.ConfigInput
+	configOutput = model.ConfigOutput
+)
 
 func main() {
 	path := "server.yaml"

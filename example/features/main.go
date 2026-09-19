@@ -1,6 +1,6 @@
 /*
  *  Copyright (c) 2026 Mikhail Knyazhev <markus621@yandex.com>. All rights reserved.
- *  Use of this source code is governed by a BSD-3-Clause license that can be found in the LICENSE file.
+ *  Use of this source code is governed by a BSD 3-Clause license that can be found in the LICENSE file.
  */
 
 // Package main demonstrates capability metadata, tool annotations, icons,
@@ -9,34 +9,19 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log"
 	"strconv"
 
 	"go.osspkg.com/mcp"
+	"go.osspkg.com/mcp/example/model"
 	mcphttp "go.osspkg.com/mcp/http"
 )
 
-type featureInput struct {
-	Name string `json:"name" mcp:"description=Name to greet"`
-}
-
-//nolint:revive // method name is required by json.Unmarshaler
-func (input *featureInput) UnmarshalJSON(data []byte) error {
-	type plain featureInput
-	return json.Unmarshal(data, (*plain)(input))
-}
-
-type featureOutput struct {
-	Greeting string `json:"greeting"`
-}
-
-//nolint:revive // method name is required by json.Marshaler
-func (output *featureOutput) MarshalJSON() ([]byte, error) {
-	type plain featureOutput
-	return json.Marshal((*plain)(output))
-}
+type (
+	featureInput  = model.FeatureInput
+	featureOutput = model.FeatureOutput
+)
 
 func main() {
 	readOnly := true

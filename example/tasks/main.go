@@ -1,6 +1,6 @@
 /*
  *  Copyright (c) 2026 Mikhail Knyazhev <markus621@yandex.com>. All rights reserved.
- *  Use of this source code is governed by a BSD-3-Clause license that can be found in the LICENSE file.
+ *  Use of this source code is governed by a BSD 3-Clause license that can be found in the LICENSE file.
  */
 
 // Package main demonstrates task-augmented tools and polling.
@@ -8,36 +8,21 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log"
 	"time"
 
 	"go.osspkg.com/mcp"
+	"go.osspkg.com/mcp/example/model"
 	mcphttp "go.osspkg.com/mcp/http"
 )
 
 const defaultJobDelay = 2 * time.Second
 
-type jobInput struct {
-	DelayMS int `json:"delayMs,omitempty" mcp:"description=Artificial delay in milliseconds"`
-}
-
-//nolint:revive // method name is required by json.Unmarshaler
-func (input *jobInput) UnmarshalJSON(data []byte) error {
-	type plain jobInput
-	return json.Unmarshal(data, (*plain)(input))
-}
-
-type jobOutput struct {
-	Status string `json:"status"`
-}
-
-//nolint:revive // method name is required by json.Marshaler
-func (output *jobOutput) MarshalJSON() ([]byte, error) {
-	type plain jobOutput
-	return json.Marshal((*plain)(output))
-}
+type (
+	jobInput  = model.JobInput
+	jobOutput = model.JobOutput
+)
 
 func main() {
 	server, err := mcp.New(mcp.ServerInfo{Name: "tasks-example", Version: "1.0.0"})

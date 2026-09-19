@@ -8,34 +8,19 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log"
 	"os"
 
 	"go.osspkg.com/mcp"
+	"go.osspkg.com/mcp/example/model"
 	"go.osspkg.com/mcp/stdio"
 )
 
-type greetingInput struct {
-	Name string `json:"name" mcp:"description=Name to greet"`
-}
-
-// UnmarshalJSON decodes the typed tool input.
-func (input *greetingInput) UnmarshalJSON(data []byte) error {
-	type plain greetingInput
-	return json.Unmarshal(data, (*plain)(input))
-}
-
-type greetingOutput struct {
-	Greeting string `json:"greeting"`
-}
-
-// MarshalJSON encodes the typed tool output.
-func (output *greetingOutput) MarshalJSON() ([]byte, error) {
-	type plain greetingOutput
-	return json.Marshal((*plain)(output))
-}
+type (
+	greetingInput  = model.GreetingInput
+	greetingOutput = model.GreetingOutput
+)
 
 func main() {
 	server, err := mcp.New(mcp.ServerInfo{Name: "stdio-example", Version: "1.0.0"})

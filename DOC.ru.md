@@ -4,7 +4,7 @@
 
 Модуль: go.osspkg.com/mcp
 
-Библиотека реализует stdlib-only сервер Model Context Protocol с единым ядром и
+Библиотека реализует сервер Model Context Protocol с единым ядром и
 тремя транспортами: newline-delimited JSON через stdio, Streamable HTTP и
 legacy SSE. Вы регистрируете инструменты, resources и prompts, подключаете
 middleware и запускаете включённые транспорты через Run.
@@ -32,9 +32,10 @@ middleware и запускаете включённые транспорты ч�
 ## 1. Назначение и границы
 
 go-mcp предназначена для разработчиков, которым нужно встроить MCP-сервер в
-CLI, локальный агент или HTTP-сервис без внешних runtime-зависимостей. go.mod
-содержит только стандартную библиотеку Go. Линтеры и инструменты разработки не
-становятся зависимостями приложения.
+CLI, локальный агент или HTTP-сервис. Сериализаторы моделей генерируются через
+`github.com/mailru/easyjson`; остальной runtime-код использует стандартную
+библиотеку Go. Линтеры и инструменты разработки не становятся зависимостями
+приложения.
 
 Поддерживаются:
 
@@ -60,7 +61,7 @@ CORS-политику, TLS-терминацию или бизнес-логику
 | mcp/stdio | newline-delimited JSON transport |
 | mcp/http | Streamable HTTP и объединение с legacy SSE |
 | mcp/sse | legacy SSE transport |
-| mcp/client | stdlib-only MCP-клиент и клиентские транспорты |
+| mcp/client | MCP-клиент и клиентские транспорты |
 
 Ядро mcp не импортирует транспортные пакеты. Транспорт получает указатель на
 сервер через интерфейс:
@@ -99,28 +100,17 @@ import (
     "go.osspkg.com/mcp/stdio"
 )
 
+//go:generate go run github.com/mailru/easyjson/easyjson models.go
+
+//easyjson:json
 type AddInput struct {
     A int `json:"a" mcp:"description=Первое слагаемое"`
     B int `json:"b" mcp:"description=Второе слагаемое"`
 }
 
-func (v *AddInput) UnmarshalJSON(data []byte) error {
-    type alias AddInput
-    var value alias
-    if err := json.Unmarshal(data, &value); err != nil {
-        return err
-    }
-    *v = AddInput(value)
-    return nil
-}
-
+//easyjson:json
 type AddOutput struct {
     Result int `json:"result"`
-}
-
-func (v *AddOutput) MarshalJSON() ([]byte, error) {
-    type alias AddOutput
-    return json.Marshal(alias(*v))
 }
 
 func main() {
@@ -444,28 +434,15 @@ prompt клиент отправляет `prompts/get` со строковыми
 Generic input/output делают wire-контракт явным:
 
 ~~~go
+//easyjson:json
 type LookupInput struct {
     ID string `json:"id" mcp:"description=Идентификатор клиента"`
 }
 
-func (value *LookupInput) UnmarshalJSON(data []byte) error {
-    type alias LookupInput
-    var decoded alias
-    if err := json.Unmarshal(data, &decoded); err != nil {
-        return err
-    }
-    *value = LookupInput(decoded)
-    return nil
-}
-
+//easyjson:json
 type LookupOutput struct {
     Name  string `json:"name"`
     Level string `json:"level"`
-}
-
-func (value *LookupOutput) MarshalJSON() ([]byte, error) {
-    type alias LookupOutput
-    return json.Marshal(alias(*value))
 }
 
 err := mcp.RegisterTool(server, "lookup", "Ищет клиента по идентификатору",
@@ -523,9 +500,10 @@ func RegisterTool[In json.Unmarshaler, Out json.Marshaler](
 ) error
 ~~~
 
-In и Out должны быть указателями на структуры приложения. Обязательное условие
-— методы UnmarshalJSON у входа и MarshalJSON у результата. Это делает
-контракт явным и позволяет валидировать JSON-кодек при регистрации.
+In и Out должны быть указателями на структуры приложения. Пометьте модели
+`//easyjson:json` и сгенерируйте стандартные методы `UnmarshalJSON` и
+`MarshalJSON` через easyjson. Это делает контракт явным и позволяет
+валидировать JSON-кодек при регистрации.
 
 JSON Schema строится из полей и тегов:
 
@@ -860,7 +838,7 @@ Server возвращает обычный net/http.Server; вы сами выз
 
 ### 9.5 MCP-клиент
 
-`go.osspkg.com/mcp/client` — stdlib-only клиент для всех транспортов этой
+`go.osspkg.com/mcp/client` — клиент для всех транспортов этой
 библиотеки. Создайте transport, затем `client.Client`, запустите его с
 контекстом жизненного цикла и завершите MCP handshake до вызова каталогов:
 
@@ -1155,6 +1133,7 @@ make lint проверяет форматирование, vet и статиче
 | --- | --- |
 | 2026-09-19 | Добавлен ленивый запуск stdio-сервера как дочернего процесса с остановкой по context и отдельным stderr. |
 | 2026-09-19 | Добавлены stdlib-only MCP-клиент и runnable client example для stdio, Streamable HTTP и legacy SSE. |
+| 2026-09-19 | Ручные JSON-методы моделей заменены сгенерированными сериализаторами easyjson. |
 | 2026-09-19 | Для SSE добавлена фоновая очистка истёкших сессий и завершение связанных потоков. |
 | 2026-09-19 | Добавлено подробное API-описание, сценарии использования и lifecycle guidance. |
 | 2026-09-19 | Закрытие SSE handler теперь немедленно завершает активные сессии и cleanup. |

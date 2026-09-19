@@ -1,6 +1,6 @@
 /*
  *  Copyright (c) 2026 Mikhail Knyazhev <markus621@yandex.com>. All rights reserved.
- *  Use of this source code is governed by a BSD-3-Clause license that can be found in the LICENSE file.
+ *  Use of this source code is governed by a BSD 3-Clause license that can be found in the LICENSE file.
  */
 
 // Package main serves OAuth 2.0 and OpenID Connect discovery metadata.
