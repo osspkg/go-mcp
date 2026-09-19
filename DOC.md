@@ -898,8 +898,14 @@ tools, err := mcpClient.ListTools(ctx)
 if err != nil { log.Fatal(err) }
 ~~~
 
-Use `NewStdioTransport(input, output, StdioConfig{})` for a child process and
-`NewSSETransport("http://host/sse", SSEConfig{})` for the legacy transport.
+Use `NewCommandTransport("./my-mcp-server", args, CommandConfig{})` to launch a
+child process, `NewStdioTransport(input, output, StdioConfig{})` to connect to
+already-open streams, and `NewSSETransport("http://host/sse", SSEConfig{})`
+for the legacy transport.
+`Client.Start` returns command creation/startup errors synchronously; the
+child inherits the configured working directory and environment, writes
+diagnostics to `CommandConfig.Stderr`, and is terminated by the client
+context or `Close`.
 `ListResources`, `ReadResource`, `ListPrompts`, `GetPrompt`, `CallTool`, and
 Task helpers provide typed catalog operations. `CallRaw` remains available for
 new or application-specific MCP methods.
@@ -1163,6 +1169,7 @@ For your own tool, test:
 
 | Date | Change |
 | --- | --- |
+| 2026-09-19 | Added lazy child-process startup for stdio clients with context-bound termination and stderr isolation. |
 | 2026-09-19 | Added the stdlib-only MCP client package and runnable client example for stdio, Streamable HTTP, and legacy SSE. |
 | 2026-09-19 | Added the English API reference and developer use cases. |
 | 2026-09-19 | Added background cleanup for expired SSE sessions and their streams. |

@@ -876,11 +876,17 @@ tools, err := mcpClient.ListTools(ctx)
 if err != nil { log.Fatal(err) }
 ~~~
 
-Для дочернего процесса используйте `NewStdioTransport(input, output,
-StdioConfig{})`, а для legacy-транспорта —
+Для запуска дочернего процесса используйте
+`NewCommandTransport("./my-mcp-server", args, CommandConfig{})`; для уже
+открытых потоков — `NewStdioTransport(input, output, StdioConfig{})`, а для
+legacy-транспорта —
 `NewSSETransport("http://host/sse", SSEConfig{})`. Typed helpers включают
 `ListResources`, `ReadResource`, `ListPrompts`, `GetPrompt`, `CallTool` и
 операции Tasks. Для новых или прикладных методов остаётся `CallRaw`.
+Ошибки создания и запуска команды `Client.Start` возвращает синхронно.
+Дочерний процесс получает заданные рабочий каталог и окружение, пишет
+диагностику в `CommandConfig.Stderr` и завершается при отмене контекста клиента
+или вызове `Close`.
 
 Server-to-client методы подключаются явно, чтобы приложение само определяло
 разрешённые возможности:
@@ -1141,6 +1147,7 @@ make lint проверяет форматирование, vet и статиче
 
 | Дата | Изменение |
 | --- | --- |
+| 2026-09-19 | Добавлен ленивый запуск stdio-сервера как дочернего процесса с остановкой по context и отдельным stderr. |
 | 2026-09-19 | Добавлены stdlib-only MCP-клиент и runnable client example для stdio, Streamable HTTP и legacy SSE. |
 | 2026-09-19 | Для SSE добавлена фоновая очистка истёкших сессий и завершение связанных потоков. |
 | 2026-09-19 | Добавлено подробное API-описание, сценарии использования и lifecycle guidance. |

@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,6 +10,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -16,6 +19,12 @@ import (
 
 	"go.osspkg.com/mcp"
 	mcphttp "go.osspkg.com/mcp/http"
+)
+
+const (
+	testProtocolVersion = "2025-11-25"
+	jsonRPCField        = "jsonrpc"
+	resultField         = "result"
 )
 
 type directTransport struct {
@@ -44,7 +53,7 @@ func (transport *directTransport) Send(_ context.Context, payload []byte) ([]byt
 	if len(request.ID) == 0 {
 		return nil, nil
 	}
-	return json.Marshal(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{"ok": true}})
+	return json.Marshal(map[string]any{jsonRPCField: rpcVersion, "id": request.ID, resultField: map[string]any{"ok": true}})
 }
 
 func (transport *directTransport) Close() error { return nil }
@@ -136,7 +145,7 @@ func TestUnitHTTPTransportWithLibraryServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ProtocolVersion != "2025-11-25" {
+	if result.ProtocolVersion != testProtocolVersion {
 		t.Fatalf("unexpected protocol version %q", result.ProtocolVersion)
 	}
 	if err := client.Ping(ctx); err != nil {
@@ -176,9 +185,9 @@ func TestUnitHTTPTransportWithRoundTripper(t *testing.T) {
 		if len(incoming.ID) > 0 {
 			result := map[string]any{}
 			if incoming.Method == "initialize" {
-				result = map[string]any{"protocolVersion": "2025-11-25", "capabilities": map[string]any{}, "serverInfo": map[string]any{"name": "mock", "version": "1"}}
+				result = map[string]any{"protocolVersion": testProtocolVersion, "capabilities": map[string]any{}, "serverInfo": map[string]any{"name": "mock", "version": "1"}}
 			}
-			response, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": incoming.ID, "result": result})
+			response, err := json.Marshal(map[string]any{jsonRPCField: rpcVersion, "id": incoming.ID, resultField: result})
 			if err != nil {
 				return nil, err
 			}
@@ -209,6 +218,79 @@ func TestUnitHTTPTransportWithRoundTripper(t *testing.T) {
 		t.Fatalf("expected initialize, initialized, and ping posts; got %d", posts.Load())
 	}
 	_ = client.Close()
+}
+
+func TestUnitCommandTransport(t *testing.T) {
+	env := append(os.Environ(), "GO_MCP_CLIENT_HELPER=1")
+	transport, err := NewCommandTransport(os.Args[0], []string{"-test.run=TestClientHelperProcess", "--"}, CommandConfig{Env: env, Stderr: io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := New(transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := client.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Initialize(ctx, InitializeParams{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Ping(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUnitCommandTransportStartError(t *testing.T) {
+	transport, err := NewCommandTransport(filepath.Join(t.TempDir(), "missing-command"), nil, CommandConfig{Stderr: io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := New(transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := client.Start(ctx); err == nil || !strings.Contains(err.Error(), "start command") {
+		t.Fatalf("expected command startup error, got %v", err)
+	}
+}
+
+func TestClientHelperProcess(t *testing.T) {
+	if os.Getenv("GO_MCP_CLIENT_HELPER") != "1" {
+		return
+	}
+	scanner := bufio.NewScanner(os.Stdin)
+	writer := bufio.NewWriter(os.Stdout)
+	for scanner.Scan() {
+		var request struct {
+			JSONRPC string          `json:"jsonrpc"`
+			ID      json.RawMessage `json:"id"`
+			Method  string          `json:"method"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &request); err != nil || len(request.ID) == 0 {
+			continue
+		}
+		result := map[string]any{}
+		if request.Method == "initialize" {
+			result = map[string]any{"protocolVersion": testProtocolVersion, "capabilities": map[string]any{}, "serverInfo": map[string]any{"name": "helper", "version": "1"}}
+		}
+		payload, err := json.Marshal(map[string]any{jsonRPCField: rpcVersion, "id": request.ID, resultField: result})
+		if err != nil {
+			os.Exit(2)
+		}
+		_, _ = writer.Write(append(payload, '\n'))
+		if err := writer.Flush(); err != nil {
+			os.Exit(2)
+		}
+	}
+	os.Exit(0)
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

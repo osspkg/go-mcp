@@ -137,7 +137,7 @@ func (transport *HTTPTransport) Send(ctx context.Context, payload []byte) ([]byt
 	}
 	sessionID := transport.sessionID
 	transport.mu.Unlock()
-	req, err := stdhttp.NewRequestWithContext(ctx, stdhttp.MethodPost, transport.endpoint, bytes.NewReader(payload))
+	req, err := stdhttp.NewRequestWithContext(ctx, stdhttp.MethodPost, transport.endpoint, bytes.NewReader(payload)) //nolint:gosec // endpoint is validated by the constructor
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +147,7 @@ func (transport *HTTPTransport) Send(ctx context.Context, payload []byte) ([]byt
 	if sessionID != "" {
 		req.Header.Set("Mcp-Session-Id", sessionID)
 	}
-	resp, err := transport.config.Client.Do(req)
+	resp, err := transport.config.Client.Do(req) //nolint:gosec // endpoint is validated by the constructor
 	if err != nil {
 		return nil, err
 	}

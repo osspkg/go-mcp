@@ -14,6 +14,8 @@ go run ./example/features
 go run ./example/tasks
 go run ./example/discovery
 MCP_ENDPOINT=http://127.0.0.1:8080/mcp go run ./example/client
+# Or launch a local stdio server as a child process:
+go run ./example/client -- ./path/to/mcp-server --flag
 ```
 
 ## Examples
@@ -27,7 +29,8 @@ MCP_ENDPOINT=http://127.0.0.1:8080/mcp go run ./example/client
 - `features` — capabilities, tool annotations, icons, output schema, progress, logging, roots, sampling, and elicitation.
 - `tasks` — task-augmented tool execution with cancellation and polling.
 - `discovery` — OAuth protected-resource and authorization-server metadata.
-- `client` — Streamable HTTP client handshake, tool discovery, and invocation.
+- `client` — Streamable HTTP client handshake, tool discovery, invocation, and
+  optional child-process stdio launch.
 
 All MCP servers run through `server.Run(transports...)`. The library
 automatically handles shutdown on `os.Interrupt` or `SIGTERM`. The standalone

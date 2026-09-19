@@ -18,7 +18,7 @@ if len(tools.Tools) != 0 {
 return err
 ```
 
-Use `NewStdioTransport` for a child process or `NewSSETransport` for a legacy
-`/sse` endpoint. `OnRequest` handles server-initiated requests and
+Use `NewCommandTransport` to launch a child process, `NewStdioTransport` for
+already-open streams, or `NewSSETransport` for a legacy `/sse` endpoint.
+`OnRequest` handles server-initiated requests and
 `OnNotification` handles progress, logging, and list-changed notifications.
-

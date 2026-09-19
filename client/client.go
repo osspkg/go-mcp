@@ -67,6 +67,10 @@ type readyTransport interface {
 	Ready() <-chan struct{}
 }
 
+type startupErrorTransport interface {
+	StartupError() error
+}
+
 // RPCError is a JSON-RPC error returned by an MCP server.
 type RPCError struct {
 	Code    int             `json:"code"`
@@ -362,6 +366,12 @@ func (client *Client) Start(ctx context.Context) error { //nolint:contextcheck /
 		case <-readyCh:
 		case <-ctx.Done():
 			return ctx.Err()
+		}
+	}
+	if startup, ok := client.transport.(startupErrorTransport); ok {
+		if err := startup.StartupError(); err != nil {
+			client.fail(err)
+			return err
 		}
 	}
 	return nil

@@ -219,7 +219,8 @@ if len(tools.Tools) > 0 {
 }
 ```
 
-Use `client.NewStdioTransport` for child-process servers and
+Use `client.NewCommandTransport` to launch a child-process stdio server,
+`client.NewStdioTransport` to connect to already-open streams, and
 `client.NewSSETransport` for legacy `/sse` endpoints. Register
 `OnRequest("sampling/createMessage", ...)`, `OnRequest("roots/list", ...)`, or
 `OnRequest("elicitation/create", ...)` before making calls that can trigger

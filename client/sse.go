@@ -201,13 +201,13 @@ func (transport *SSETransport) Send(ctx context.Context, payload []byte) ([]byte
 	if messageURL == "" {
 		return nil, errors.New("mcp/client: SSE endpoint did not advertise a message URL")
 	}
-	req, err := stdhttp.NewRequestWithContext(ctx, stdhttp.MethodPost, messageURL, bytes.NewReader(payload))
+	req, err := stdhttp.NewRequestWithContext(ctx, stdhttp.MethodPost, messageURL, bytes.NewReader(payload)) //nolint:gosec // message URL is resolved from the validated SSE endpoint
 	if err != nil {
 		return nil, err
 	}
 	transport.applyHeaders(req)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := transport.config.Client.Do(req)
+	resp, err := transport.config.Client.Do(req) //nolint:gosec // message URL is resolved from the validated SSE endpoint
 	if err != nil {
 		return nil, err
 	}

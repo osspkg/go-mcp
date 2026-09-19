@@ -146,7 +146,10 @@ task support.
 ## Client API
 
 `go.osspkg.com/mcp/client` provides `Client`, `Transport`, and constructors
-`NewStdioTransport`, `NewHTTPTransport`, and `NewSSETransport`. Call `Start`
+`NewCommandTransport`, `NewStdioTransport`, `NewHTTPTransport`, and
+`NewSSETransport`. `NewCommandTransport` starts a child process lazily and
+terminates it with the client context; command creation and startup failures
+are returned by `Client.Start`. Call `Start`
 with a lifecycle context, then `Initialize`; catalog helpers expose tools,
 resources, prompts, logging, and Tasks. `OnRequest` is required for server-
 initiated `roots/list`, `sampling/createMessage`, or `elicitation/create`, and

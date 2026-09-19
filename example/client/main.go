@@ -3,9 +3,14 @@
  * Use of this source code is governed by a BSD 3-Clause license that can be found in the LICENSE file.
  */
 
-// The client example connects to a Streamable HTTP MCP server, performs the
-// MCP handshake, lists tools, and optionally calls the first tool with an
-// empty argument object. Set MCP_ENDPOINT to override the default endpoint.
+// The client example connects to a Streamable HTTP MCP server by default. If a
+// command is provided, it starts that command as a stdio MCP server instead:
+//
+//	go run ./example/client -- ./my-mcp-server --flag
+//
+// The client performs the MCP handshake, lists tools, and optionally calls the
+// first tool with an empty argument object. Set MCP_ENDPOINT to override the
+// default HTTP endpoint.
 package main
 
 import (
@@ -20,15 +25,31 @@ import (
 const clientTimeout = 10 * time.Second
 
 func main() {
-	endpoint := os.Getenv("MCP_ENDPOINT")
-	if endpoint == "" {
-		endpoint = "http://127.0.0.1:8080/mcp"
+	commandArgs := os.Args[1:]
+	if len(commandArgs) > 0 && commandArgs[0] == "--" {
+		commandArgs = commandArgs[1:]
 	}
-	transport, err := client.NewHTTPTransport(endpoint, client.HTTPConfig{})
-	if err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, err)
-		return
+	var transport client.Transport
+	if len(commandArgs) > 0 {
+		commandTransport, err := client.NewCommandTransport(commandArgs[0], commandArgs[1:], client.CommandConfig{})
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			return
+		}
+		transport = commandTransport
+	} else {
+		endpoint := os.Getenv("MCP_ENDPOINT")
+		if endpoint == "" {
+			endpoint = "http://127.0.0.1:8080/mcp"
+		}
+		httpTransport, err := client.NewHTTPTransport(endpoint, client.HTTPConfig{})
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			return
+		}
+		transport = httpTransport
 	}
+
 	mcpClient, err := client.NewWithConfig(transport, client.ClientConfig{Info: client.Implementation{Name: "go-mcp-example-client", Version: "1.0.0"}})
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
