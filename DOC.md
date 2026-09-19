@@ -212,6 +212,7 @@ Registration methods:
 func (s *Server) RegisterResource(resource Resource) error
 func (s *Server) RegisterResourceTemplate(template ResourceTemplate) error
 func (s *Server) RegisterPrompt(prompt Prompt) error
+func WithRequestObserver(observers ...RequestObserver) Option
 ~~~
 
 Tool and prompt names, and resource URIs, must be unique within their
@@ -742,6 +743,10 @@ func NewTransportWithSSE(config Config, legacy sse.Config) *Transport
 func NewHandler(server *mcp.Server, config Config) (*Handler, error)
 ~~~
 
+`Content-Type: application/json` may include media-type parameters such as
+`charset=utf-8`. JSON-RPC request IDs must be strings, numbers, or null; MCP
+method parameters must be objects.
+
 SSE Config has the same fields and additionally SSEPath and MessagePath:
 
 ~~~go
@@ -762,6 +767,16 @@ func NewTransport(config Config) *Transport
 func NewHandler(server *mcp.Server, config Config) (*Handler, error)
 func (h *Handler) Close()
 ~~~
+
+### Stdio limits and request observation
+
+`stdio.NewTransport` keeps the 1 MiB default line limit. Use
+`stdio.NewTransportWithConfig` or `stdio.ServeWithConfig` with
+`stdio.Config{MaxMessageBytes: ...}` to choose another positive bound.
+
+`WithRequestObserver` receives each successfully parsed request after its
+handler returns, including the request duration. Observers run synchronously;
+use them for lightweight metrics and tracing hooks.
 
 Both HTTP packages export the same managed-listener helper:
 
@@ -1029,3 +1044,4 @@ For your own tool, test:
 | 2026-09-19 | Added the English API reference and developer use cases. |
 | 2026-09-19 | Added background cleanup for expired SSE sessions and their streams. |
 | 2026-09-19 | Closing an SSE handler now terminates active sessions and cleanup immediately. |
+| 2026-09-19 | Added strict request validation, URI-variable decoding, stdio limits, observers, fuzzing, and benchmarks. |

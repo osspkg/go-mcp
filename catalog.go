@@ -61,6 +61,9 @@ func (server *Server) RegisterResourceTemplate(template ResourceTemplate) error 
 	if strings.TrimSpace(template.URITemplate) == "" || strings.TrimSpace(template.Name) == "" || template.Handler == nil {
 		return errors.New("mcp: resource template, name, and handler are required")
 	}
+	if !validTemplate(template.URITemplate) {
+		return errors.New("mcp: invalid resource template")
+	}
 	server.mu.Lock()
 	defer server.mu.Unlock()
 	if server.started {
@@ -73,6 +76,23 @@ func (server *Server) RegisterResourceTemplate(template ResourceTemplate) error 
 	}
 	server.templates = append(server.templates, template)
 	return nil
+}
+
+func validTemplate(template string) bool {
+	for _, part := range strings.Split(template, "/") {
+		if !strings.ContainsAny(part, "{}") {
+			continue
+		}
+		if len(part) < 3 || part[0] != '{' || part[len(part)-1] != '}' {
+			return false
+		}
+		for index, char := range part[1 : len(part)-1] {
+			if char != '_' && (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (index <= 0 || char < '0' || char > '9') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // PromptMessage is one message returned by a prompt.

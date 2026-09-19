@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 var (
@@ -54,6 +55,10 @@ type Handler func(context.Context, Request) (any, error)
 // Middleware wraps every MCP request, including initialize and list methods.
 type Middleware func(Handler) Handler
 
+// RequestObserver receives completed, successfully parsed MCP requests.
+// Observers run synchronously and should return quickly.
+type RequestObserver func(context.Context, Request, time.Duration)
+
 // Option configures a Server.
 type Option func(*Server) error
 
@@ -71,6 +76,19 @@ func WithMiddleware(middleware ...Middleware) Option {
 	}
 }
 
+// WithRequestObserver appends observers invoked after each parsed request.
+func WithRequestObserver(observers ...RequestObserver) Option {
+	return func(server *Server) error {
+		for _, observer := range observers {
+			if observer == nil {
+				return errors.New("mcp: nil request observer")
+			}
+			server.observers = append(server.observers, observer)
+		}
+		return nil
+	}
+}
+
 // Server is a transport-independent MCP server. Register all catalog entries
 // before serving; the first request seals the registry.
 type Server struct {
@@ -79,6 +97,7 @@ type Server struct {
 	mu         sync.RWMutex
 	started    bool
 	middleware []Middleware
+	observers  []RequestObserver
 	tools      map[string]tool
 	resources  map[string]Resource
 	templates  []ResourceTemplate

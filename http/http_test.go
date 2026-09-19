@@ -28,7 +28,7 @@ func TestUnitHandlerSessionAndAuthorization(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
-	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Content-Type", "application/json; charset=utf-8")
 	denied := httptest.NewRecorder()
 	handler.ServeHTTP(denied, request)
 	if denied.Code != http.StatusUnauthorized {

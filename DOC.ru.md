@@ -213,6 +213,7 @@ func (s *Server) ServeJSON(
 func (s *Server) RegisterResource(resource Resource) error
 func (s *Server) RegisterResourceTemplate(template ResourceTemplate) error
 func (s *Server) RegisterPrompt(prompt Prompt) error
+func WithRequestObserver(observers ...RequestObserver) Option
 ~~~
 
 Имена tools/prompts и URI ресурсов должны быть уникальными в своей категории.
@@ -765,6 +766,18 @@ func NewHandler(server *mcp.Server, config Config) (*Handler, error)
 func (h *Handler) Close()
 ~~~
 
+`Content-Type: application/json` может содержать параметры, например
+`charset=utf-8`. JSON-RPC ID допускает строку, число или null; параметры MCP
+метода должны быть объектом.
+
+### Лимиты stdio и наблюдение запросов
+
+`stdio.NewTransport` сохраняет лимит строки 1 MiB. Для явного положительного
+лимита используйте `stdio.NewTransportWithConfig` или `stdio.ServeWithConfig`
+с `stdio.Config{MaxMessageBytes: ...}`. `WithRequestObserver` вызывается после
+обработки каждого разобранного запроса и получает его длительность; hook должен
+выполняться быстро.
+
 Оба HTTP-пакета экспортируют одинаковый helper для управляемого listener:
 
 ~~~go
@@ -1031,3 +1044,4 @@ make lint проверяет форматирование, vet и статиче
 | 2026-09-19 | Для SSE добавлена фоновая очистка истёкших сессий и завершение связанных потоков. |
 | 2026-09-19 | Добавлено подробное API-описание, сценарии использования и lifecycle guidance. |
 | 2026-09-19 | Закрытие SSE handler теперь немедленно завершает активные сессии и cleanup. |
+| 2026-09-19 | Добавлены строгая проверка запросов, URI variables, лимиты stdio, observers, fuzzing и benchmarks. |

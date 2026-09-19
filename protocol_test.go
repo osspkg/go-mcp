@@ -84,6 +84,26 @@ func TestUnitMiddlewareAuthorization(t *testing.T) {
 	}
 }
 
+func TestUnitRequestObserver(t *testing.T) {
+	observed := make(chan Request, 1)
+	server, err := New(ServerInfo{Name: "test", Version: "1"}, WithRequestObserver(func(_ context.Context, request Request, duration time.Duration) {
+		if duration < 0 {
+			t.Fatal("negative duration")
+		}
+		observed <- request
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.ServeJSON(t.Context(), []byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`), RequestMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	request := <-observed
+	if request.Method != "ping" {
+		t.Fatalf("method = %q", request.Method)
+	}
+}
+
 func TestUnitResourcesAndPrompts(t *testing.T) {
 	server, _ := New(ServerInfo{Name: "test", Version: "1"})
 	if err := server.RegisterResource(Resource{URI: "memo://one", Name: "one", Text: "content"}); err != nil {
@@ -126,6 +146,7 @@ func TestUnitRegisterToolRejectsRecursiveInput(t *testing.T) {
 }
 
 func TestUnitRegisterPromptCopiesSlices(t *testing.T) {
+	const changed = "changed"
 	server, err := New(ServerInfo{Name: "test", Version: "1"})
 	if err != nil {
 		t.Fatal(err)
@@ -135,8 +156,8 @@ func TestUnitRegisterPromptCopiesSlices(t *testing.T) {
 	if err := server.RegisterPrompt(Prompt{Name: "welcome", Arguments: arguments, Messages: messages}); err != nil {
 		t.Fatal(err)
 	}
-	arguments[0].Name = "changed"
-	messages[0].Text = "changed"
+	arguments[0].Name = changed
+	messages[0].Text = changed
 
 	response, err := server.ServeJSON(t.Context(), []byte(`{"jsonrpc":"2.0","id":1,"method":"prompts/get","params":{"name":"welcome"}}`), RequestMeta{})
 	if err != nil {
@@ -162,8 +183,8 @@ func TestUnitRegisterPromptCopiesSlices(t *testing.T) {
 			case <-done:
 				return
 			default:
-				arguments[0].Name = "changed"
-				messages[0].Text = "changed"
+				arguments[0].Name = changed
+				messages[0].Text = changed
 			}
 		}
 	}()
@@ -176,6 +197,32 @@ func TestUnitRegisterPromptCopiesSlices(t *testing.T) {
 	}
 	close(done)
 	<-stopped
+}
+
+func TestUnitRejectsInvalidJSONRPCIDAndParams(t *testing.T) {
+	server, err := New(ServerInfo{Name: "test", Version: "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, payload := range []string{
+		`{"jsonrpc":"2.0","id":{},"method":"ping"}`,
+		`{"jsonrpc":"2.0","id":1,"method":"ping","params":[]}`,
+	} {
+		response, err := server.ServeJSON(t.Context(), []byte(payload), RequestMeta{})
+		if err != nil || !strings.Contains(string(response), `"code":-32600`) {
+			t.Fatalf("payload %s: response=%s err=%v", payload, response, err)
+		}
+	}
+}
+
+func TestUnitResourceTemplateDecodesSafeVariable(t *testing.T) {
+	values, ok := matchTemplate("memo:///{name}", "memo:///Ada%20Lovelace")
+	if !ok || values["name"] != "Ada Lovelace" {
+		t.Fatalf("values=%v ok=%v", values, ok)
+	}
+	if _, ok := matchTemplate("memo:///{name}", "memo:///%2F"); ok {
+		t.Fatal("accepted escaped path separator")
+	}
 }
 
 type testTransport func(context.Context, *Server) error

@@ -31,6 +31,7 @@ and developer use cases. A Russian version is available in
 - Typed tools with JSON Schema generated from Go structs and tags.
 - Static and dynamic resources, resource templates, and prompts.
 - Stdio, Streamable HTTP, and legacy SSE transports.
+- Strict JSON-RPC request validation, bounded stdio framing, and optional request observers.
 - Shared middleware pipeline with authorization errors mapped to protocol and
   HTTP status codes.
 - Configuration from MCP_* environment variables or flat YAML.

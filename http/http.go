@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	stdhttp "net/http"
 	"sync"
 	"time"
@@ -166,7 +167,8 @@ func (handler *Handler) ServeHTTP(writer stdhttp.ResponseWriter, request *stdhtt
 		stdhttp.Error(writer, "method not allowed", stdhttp.StatusMethodNotAllowed)
 		return
 	}
-	if request.Header.Get("Content-Type") != "application/json" {
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
 		stdhttp.Error(writer, "unsupported media type", stdhttp.StatusUnsupportedMediaType)
 		return
 	}

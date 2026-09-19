@@ -23,3 +23,15 @@ func TestUnitServe(t *testing.T) {
 		t.Fatalf("unexpected output: %s", output.String())
 	}
 }
+
+func TestUnitServeWithConfigLimit(t *testing.T) {
+	server, err := mcp.New(mcp.ServerInfo{Name: "test", Version: "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	err = ServeWithConfig(t.Context(), server, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`+"\n"), &output, Config{MaxMessageBytes: 8})
+	if err == nil {
+		t.Fatal("expected framing limit error")
+	}
+}

@@ -9,7 +9,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"strings"
+	"time"
 )
 
 type rpcRequest struct {
@@ -49,7 +51,7 @@ func (server *Server) ServeJSON(ctx context.Context, payload []byte, meta Reques
 	if err := json.Unmarshal(payload, &request); err != nil {
 		return encodeResponse(rpcResponse{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &rpcError{Code: -32700, Message: "parse error"}})
 	}
-	if request.JSONRPC != "2.0" || request.Method == "" {
+	if request.JSONRPC != "2.0" || request.Method == "" || !validRequestID(request.ID) || !validParams(request.Params) {
 		return encodeResponse(rpcResponse{JSONRPC: "2.0", ID: responseID(request.ID), Error: &rpcError{Code: -32600, Message: "invalid request"}})
 	}
 	handler := Handler(server.dispatch)
@@ -58,7 +60,10 @@ func (server *Server) ServeJSON(ctx context.Context, payload []byte, meta Reques
 		handler = server.middleware[index](handler)
 	}
 	server.mu.RUnlock()
-	result, err := handler(ctx, Request{Method: request.Method, Params: request.Params, Meta: meta})
+	observed := Request{Method: request.Method, Params: request.Params, Meta: meta}
+	started := time.Now()
+	defer func() { server.observe(ctx, observed, time.Since(started)) }()
+	result, err := handler(ctx, observed)
 	if len(request.ID) == 0 {
 		return nil, nil
 	}
@@ -74,6 +79,43 @@ func (server *Server) ServeJSON(ctx context.Context, payload []byte, meta Reques
 		return encodeResponse(rpcResponse{JSONRPC: "2.0", ID: responseID(request.ID), Error: errorFor(err)})
 	}
 	return encodeResponse(rpcResponse{JSONRPC: "2.0", ID: request.ID, Result: result})
+}
+
+func (server *Server) observe(ctx context.Context, request Request, duration time.Duration) {
+	server.mu.RLock()
+	observers := append([]RequestObserver(nil), server.observers...)
+	server.mu.RUnlock()
+	for _, observer := range observers {
+		observer(ctx, request, duration)
+	}
+}
+
+func validRequestID(id json.RawMessage) bool {
+	if len(id) == 0 {
+		return true
+	}
+	var value any
+	if json.Unmarshal(id, &value) != nil {
+		return false
+	}
+	switch value.(type) {
+	case nil, string, float64:
+		return true
+	default:
+		return false
+	}
+}
+
+func validParams(params json.RawMessage) bool {
+	if len(params) == 0 {
+		return true
+	}
+	var value any
+	if json.Unmarshal(params, &value) != nil {
+		return false
+	}
+	_, ok := value.(map[string]any)
+	return ok
 }
 
 func encodeResponse(response rpcResponse) ([]byte, error) {
@@ -237,7 +279,11 @@ func matchTemplate(template, uri string) (map[string]string, bool) {
 	values := map[string]string{}
 	for index, part := range parts {
 		if strings.HasPrefix(part, "{") && strings.HasSuffix(part, "}") {
-			values[part[1:len(part)-1]] = actual[index]
+			value, err := url.PathUnescape(actual[index])
+			if err != nil || value == "" || strings.Contains(value, "/") {
+				return nil, false
+			}
+			values[part[1:len(part)-1]] = value
 			continue
 		}
 		if part != actual[index] {
