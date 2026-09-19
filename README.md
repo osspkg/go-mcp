@@ -20,6 +20,7 @@ and developer use cases. A Russian version is available in
 - [Quick start](#quick-start)
 - [Middleware and authorization](#middleware-and-authorization)
 - [Transports](#transports)
+- [Client](#client)
 - [Configuration](#configuration)
 - [Examples](#examples)
 - [Development](#development)
@@ -198,6 +199,32 @@ defer cancel()
 
 err := server.RunContext(ctx, transport)
 ```
+
+## Client
+
+The `go.osspkg.com/mcp/client` package is a stdlib-only client for all three
+transports. It performs the MCP handshake, lists and calls tools, reads
+resources, renders prompts, polls Tasks, and dispatches server-initiated
+requests to registered handlers.
+
+```go
+transport, _ := client.NewHTTPTransport("http://127.0.0.1:8080/mcp", client.HTTPConfig{})
+mcpClient, _ := client.New(transport)
+defer mcpClient.Close()
+_ = mcpClient.Start(ctx)
+_, _ = mcpClient.Initialize(ctx, client.InitializeParams{})
+tools, _ := mcpClient.ListTools(ctx)
+if len(tools.Tools) > 0 {
+    _, _ = mcpClient.CallTool(ctx, tools.Tools[0].Name, map[string]any{}, nil)
+}
+```
+
+Use `client.NewStdioTransport` for child-process servers and
+`client.NewSSETransport` for legacy `/sse` endpoints. Register
+`OnRequest("sampling/createMessage", ...)`, `OnRequest("roots/list", ...)`, or
+`OnRequest("elicitation/create", ...)` before making calls that can trigger
+server-to-client requests; use `OnNotification` for progress, logging, and
+list-changed events.
 
 ## Configuration
 

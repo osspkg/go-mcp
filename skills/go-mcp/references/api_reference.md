@@ -13,6 +13,7 @@ APIs. The module path is `go.osspkg.com/mcp` and the supported MCP revision is
 | `mcp/http` | Streamable HTTP handler and transport at `/mcp` by default |
 | `mcp/sse` | Legacy HTTP+SSE transport at `/sse` and `/message` by default |
 | `mcp/config` | Flat env/YAML configuration and transport assembly |
+| `mcp/client` | Stdlib-only client core plus stdio, Streamable HTTP, and SSE transports |
 
 The root package must not import transport packages. Runtime dependencies are
 stdlib-only.
@@ -141,6 +142,17 @@ The core also exposes `RequestFromContext` for typed handlers. A request's
 server-initiated sampling, roots, and elicitation requests. Use
 `RegisterToolWithOptions` for tool annotations, icons, `outputSchema`, and
 task support.
+
+## Client API
+
+`go.osspkg.com/mcp/client` provides `Client`, `Transport`, and constructors
+`NewStdioTransport`, `NewHTTPTransport`, and `NewSSETransport`. Call `Start`
+with a lifecycle context, then `Initialize`; catalog helpers expose tools,
+resources, prompts, logging, and Tasks. `OnRequest` is required for server-
+initiated `roots/list`, `sampling/createMessage`, or `elicitation/create`, and
+`OnNotification` handles progress, logging, and list-changed notifications.
+The package has no authentication or TLS policy and uses only the standard
+library.
 
 For transport details, consult the official
 [MCP transport specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)

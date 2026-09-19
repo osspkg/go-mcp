@@ -1,0 +1,218 @@
+package client
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"go.osspkg.com/mcp"
+	mcphttp "go.osspkg.com/mcp/http"
+)
+
+type directTransport struct {
+	receiver Receiver
+	ready    chan struct{}
+}
+
+func (transport *directTransport) Ready() <-chan struct{} { return transport.ready }
+
+func (transport *directTransport) Start(ctx context.Context, receiver Receiver) error {
+	transport.receiver = receiver
+	close(transport.ready)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (transport *directTransport) Send(_ context.Context, payload []byte) ([]byte, error) {
+	var request struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Method  string          `json:"method"`
+	}
+	if err := json.Unmarshal(payload, &request); err != nil {
+		return nil, err
+	}
+	if len(request.ID) == 0 {
+		return nil, nil
+	}
+	return json.Marshal(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{"ok": true}})
+}
+
+func (transport *directTransport) Close() error { return nil }
+
+func TestUnitClientCallAndInitialize(t *testing.T) {
+	transport := &directTransport{ready: make(chan struct{})}
+	client, err := NewWithConfig(transport, ClientConfig{Info: Implementation{Name: "test", Version: "1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := client.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Initialize(ctx, InitializeParams{}); err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	if err := client.Call(ctx, "custom", nil, &result); err != nil {
+		t.Fatal(err)
+	}
+	ok, exists := result["ok"].(bool)
+	if !exists || !ok {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+}
+
+func TestUnitClientServerRequestHandler(t *testing.T) {
+	transport := &directTransport{ready: make(chan struct{})}
+	client, err := New(transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := client.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	called := make(chan bool, 1)
+	if err := client.OnRequest("roots/list", func(_ context.Context, _ json.RawMessage) (any, error) {
+		called <- true
+		return map[string]any{"roots": []any{}}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.receive(ctx, []byte(`{"jsonrpc":"2.0","id":"server-1","method":"roots/list","params":{}}`)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("server request handler was not called")
+	}
+}
+
+func TestUnitHTTPTransportWithLibraryServer(t *testing.T) {
+	server, err := mcp.New(mcp.ServerInfo{Name: "test-server", Version: "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := mcphttp.NewHandler(server, mcphttp.Config{Path: "/mcp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handler.Close()
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("network listen unavailable: %v", err)
+	}
+	httpServer := httptest.NewUnstartedServer(handler)
+	httpServer.Listener = listener
+	httpServer.Start()
+	defer httpServer.Close()
+	transport, err := NewHTTPTransport(httpServer.URL+"/mcp", HTTPConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := New(transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := client.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.Initialize(ctx, InitializeParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ProtocolVersion != "2025-11-25" {
+		t.Fatalf("unexpected protocol version %q", result.ProtocolVersion)
+	}
+	if err := client.Ping(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUnitRPCError(t *testing.T) {
+	err := &RPCError{Code: -32601, Message: "missing"}
+	if !errors.Is(err, err) || err.Error() == "" {
+		t.Fatal("RPCError should implement error")
+	}
+}
+
+func TestUnitHTTPTransportWithRoundTripper(t *testing.T) {
+	var posts atomic.Int32
+	httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method == http.MethodGet {
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+		}
+		posts.Add(1)
+		payload, err := io.ReadAll(request.Body)
+		if err != nil {
+			return nil, err
+		}
+		var incoming struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		if err := json.Unmarshal(payload, &incoming); err != nil {
+			return nil, err
+		}
+		body := bytes.NewBuffer(nil)
+		if len(incoming.ID) > 0 {
+			result := map[string]any{}
+			if incoming.Method == "initialize" {
+				result = map[string]any{"protocolVersion": "2025-11-25", "capabilities": map[string]any{}, "serverInfo": map[string]any{"name": "mock", "version": "1"}}
+			}
+			response, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": incoming.ID, "result": result})
+			if err != nil {
+				return nil, err
+			}
+			_, _ = body.Write(response)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(body), Header: http.Header{"Mcp-Session-Id": []string{"mock-session"}}}, nil
+	})}
+	transport, err := NewHTTPTransport("http://mock.test/mcp", HTTPConfig{Client: httpClient, ReconnectDelay: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := New(transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := client.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Initialize(ctx, InitializeParams{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Ping(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if posts.Load() < 3 {
+		t.Fatalf("expected initialize, initialized, and ping posts; got %d", posts.Load())
+	}
+	_ = client.Close()
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
+}

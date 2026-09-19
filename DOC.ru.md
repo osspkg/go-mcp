@@ -21,6 +21,7 @@ middleware и запускаете включённые транспорты ч�
 7. [Middleware и авторизация](#7-middleware-и-авторизация)
 8. [JSON-RPC и методы MCP](#8-json-rpc-и-методы-mcp)
 9. [Транспорты](#9-транспорты)
+   - [MCP-клиент](#mcp-клиент)
 10. [Конфигурация](#10-конфигурация)
 11. [Жизненный цикл и остановка](#11-жизненный-цикл-и-остановка)
 12. [Сценарии использования](#12-сценарии-использования)
@@ -59,6 +60,7 @@ CORS-политику, TLS-терминацию или бизнес-логику
 | mcp/stdio | newline-delimited JSON transport |
 | mcp/http | Streamable HTTP и объединение с legacy SSE |
 | mcp/sse | legacy SSE transport |
+| mcp/client | stdlib-only MCP-клиент и клиентские транспорты |
 
 Ядро mcp не импортирует транспортные пакеты. Транспорт получает указатель на
 сервер через интерфейс:
@@ -855,6 +857,47 @@ Server возвращает обычный net/http.Server; вы сами выз
 а библиотека вызывает Shutdown после отмены непустого context. При nil context
 остановкой управляет вызывающий код.
 
+### 9.5 MCP-клиент
+
+`go.osspkg.com/mcp/client` — stdlib-only клиент для всех транспортов этой
+библиотеки. Создайте transport, затем `client.Client`, запустите его с
+контекстом жизненного цикла и завершите MCP handshake до вызова каталогов:
+
+~~~go
+transport, err := client.NewHTTPTransport("http://127.0.0.1:8080/mcp", client.HTTPConfig{})
+if err != nil { log.Fatal(err) }
+mcpClient, err := client.New(transport)
+if err != nil { log.Fatal(err) }
+defer mcpClient.Close()
+if err := mcpClient.Start(ctx); err != nil { log.Fatal(err) }
+_, err = mcpClient.Initialize(ctx, client.InitializeParams{})
+if err != nil { log.Fatal(err) }
+tools, err := mcpClient.ListTools(ctx)
+if err != nil { log.Fatal(err) }
+~~~
+
+Для дочернего процесса используйте `NewStdioTransport(input, output,
+StdioConfig{})`, а для legacy-транспорта —
+`NewSSETransport("http://host/sse", SSEConfig{})`. Typed helpers включают
+`ListResources`, `ReadResource`, `ListPrompts`, `GetPrompt`, `CallTool` и
+операции Tasks. Для новых или прикладных методов остаётся `CallRaw`.
+
+Server-to-client методы подключаются явно, чтобы приложение само определяло
+разрешённые возможности:
+
+~~~go
+_ = mcpClient.OnRequest("roots/list", func(context.Context, json.RawMessage) (any, error) {
+    return map[string]any{"roots": []any{}}, nil
+})
+_ = mcpClient.OnRequest("sampling/createMessage", samplingHandler)
+_ = mcpClient.OnNotification("notifications/progress", progressHandler)
+~~~
+
+Клиент сопоставляет параллельные запросы по JSON-RPC ID, ограничивает ответы
+HTTP/SSE, сериализует записи stdio и отменяет ожидающие вызовы при остановке
+транспорта. Аутентификация и TLS остаются политикой приложения: передайте
+настроенный `http.Client` или заголовки в конфигурацию транспорта.
+
 ## 10. Конфигурация
 
 Пакет go.osspkg.com/mcp/config поддерживает два взаимоисключающих источника.
@@ -1098,6 +1141,7 @@ make lint проверяет форматирование, vet и статиче
 
 | Дата | Изменение |
 | --- | --- |
+| 2026-09-19 | Добавлены stdlib-only MCP-клиент и runnable client example для stdio, Streamable HTTP и legacy SSE. |
 | 2026-09-19 | Для SSE добавлена фоновая очистка истёкших сессий и завершение связанных потоков. |
 | 2026-09-19 | Добавлено подробное API-описание, сценарии использования и lifecycle guidance. |
 | 2026-09-19 | Закрытие SSE handler теперь немедленно завершает активные сессии и cleanup. |

@@ -23,6 +23,7 @@ type jobInput struct {
 	DelayMS int `json:"delayMs,omitempty" mcp:"description=Artificial delay in milliseconds"`
 }
 
+//nolint:revive // method name is required by json.Unmarshaler
 func (input *jobInput) UnmarshalJSON(data []byte) error {
 	type plain jobInput
 	return json.Unmarshal(data, (*plain)(input))
@@ -32,6 +33,7 @@ type jobOutput struct {
 	Status string `json:"status"`
 }
 
+//nolint:revive // method name is required by json.Marshaler
 func (output *jobOutput) MarshalJSON() ([]byte, error) {
 	type plain jobOutput
 	return json.Marshal((*plain)(output))

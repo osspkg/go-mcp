@@ -13,6 +13,7 @@ go run ./example/config-yaml -- example/config-yaml/server.yaml
 go run ./example/features
 go run ./example/tasks
 go run ./example/discovery
+MCP_ENDPOINT=http://127.0.0.1:8080/mcp go run ./example/client
 ```
 
 ## Examples
@@ -26,6 +27,7 @@ go run ./example/discovery
 - `features` — capabilities, tool annotations, icons, output schema, progress, logging, roots, sampling, and elicitation.
 - `tasks` — task-augmented tool execution with cancellation and polling.
 - `discovery` — OAuth protected-resource and authorization-server metadata.
+- `client` — Streamable HTTP client handshake, tool discovery, and invocation.
 
 All MCP servers run through `server.Run(transports...)`. The library
 automatically handles shutdown on `os.Interrupt` or `SIGTERM`. The standalone

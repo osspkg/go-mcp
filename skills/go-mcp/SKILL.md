@@ -43,6 +43,11 @@ porting comparison.
   `http.NewTransportWithSSE`, or `sse.NewTransport`. Use `config.Transports`
   when configuration selects transports; HTTP and SSE share one listener when
   both are enabled through that adapter.
+- Use `go.osspkg.com/mcp/client` when an application must consume a server:
+  start `client.NewHTTPTransport`, `client.NewStdioTransport`, or
+  `client.NewSSETransport`, complete `Initialize`, then use the typed catalog
+  and task helpers. Register `OnRequest` handlers for server-initiated roots,
+  sampling, or elicitation before invoking tools.
 - Typed tools use `RegisterTool[In, Out]` inference. `In` and `Out` are
   pointers to structs implementing `json.Unmarshaler` and `json.Marshaler`.
   `json` tags define wire names and required fields (`omitempty` makes a field
@@ -86,6 +91,7 @@ Read only the references relevant to the current task:
 - [Testing reference](references/testing.md) for project quality gates and
   focused test expectations.
 - [Transport examples](examples/transports.md),
+- [Client examples](examples/client.md),
   [middleware example](examples/middleware.md),
   [catalog example](examples/catalog.md), and
   [configuration examples](examples/configuration.md) when writing or

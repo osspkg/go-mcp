@@ -22,6 +22,7 @@ type featureInput struct {
 	Name string `json:"name" mcp:"description=Name to greet"`
 }
 
+//nolint:revive // method name is required by json.Unmarshaler
 func (input *featureInput) UnmarshalJSON(data []byte) error {
 	type plain featureInput
 	return json.Unmarshal(data, (*plain)(input))
@@ -31,6 +32,7 @@ type featureOutput struct {
 	Greeting string `json:"greeting"`
 }
 
+//nolint:revive // method name is required by json.Marshaler
 func (output *featureOutput) MarshalJSON() ([]byte, error) {
 	type plain featureOutput
 	return json.Marshal((*plain)(output))

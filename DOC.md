@@ -21,6 +21,7 @@ enabled transports through Run.
 7. [Middleware and authorization](#7-middleware-and-authorization)
 8. [JSON-RPC and MCP methods](#8-json-rpc-and-mcp-methods)
 9. [Transports](#9-transports)
+   - [MCP client](#mcp-client)
 10. [Configuration](#10-configuration)
 11. [Lifecycle and shutdown](#11-lifecycle-and-shutdown)
 12. [Developer use cases](#12-developer-use-cases)
@@ -59,6 +60,7 @@ Public packages are separated by responsibility:
 | mcp/stdio | newline-delimited JSON transport |
 | mcp/http | Streamable HTTP and legacy SSE on one listener |
 | mcp/sse | legacy SSE transport |
+| mcp/client | stdlib-only MCP client and client transports |
 
 The mcp core does not import transport packages. A transport receives the
 server through this interface:
@@ -876,6 +878,48 @@ Server returns a regular net/http.Server. You call ListenAndServe; the library
 calls Shutdown when a non-nil context is cancelled. A nil context leaves
 shutdown under the caller's control.
 
+### 9.5 MCP client
+
+`go.osspkg.com/mcp/client` is a stdlib-only client that can connect to every
+transport implemented by this repository. Create a transport, create a
+`client.Client`, start it with a lifecycle context, and complete the MCP
+handshake before catalog calls:
+
+~~~go
+transport, err := client.NewHTTPTransport("http://127.0.0.1:8080/mcp", client.HTTPConfig{})
+if err != nil { log.Fatal(err) }
+mcpClient, err := client.New(transport)
+if err != nil { log.Fatal(err) }
+defer mcpClient.Close()
+if err := mcpClient.Start(ctx); err != nil { log.Fatal(err) }
+_, err = mcpClient.Initialize(ctx, client.InitializeParams{})
+if err != nil { log.Fatal(err) }
+tools, err := mcpClient.ListTools(ctx)
+if err != nil { log.Fatal(err) }
+~~~
+
+Use `NewStdioTransport(input, output, StdioConfig{})` for a child process and
+`NewSSETransport("http://host/sse", SSEConfig{})` for the legacy transport.
+`ListResources`, `ReadResource`, `ListPrompts`, `GetPrompt`, `CallTool`, and
+Task helpers provide typed catalog operations. `CallRaw` remains available for
+new or application-specific MCP methods.
+
+Server-to-client methods are handled explicitly so applications decide what
+the client is allowed to do:
+
+~~~go
+_ = mcpClient.OnRequest("roots/list", func(context.Context, json.RawMessage) (any, error) {
+    return map[string]any{"roots": []any{}}, nil
+})
+_ = mcpClient.OnRequest("sampling/createMessage", samplingHandler)
+_ = mcpClient.OnNotification("notifications/progress", progressHandler)
+~~~
+
+The client correlates concurrent requests by JSON-RPC ID, bounds HTTP/SSE
+responses, serializes stdio writes, and cancels pending calls on transport
+shutdown. It does not provide authentication or TLS policy; configure those in
+`http.Client`, headers, or the surrounding application.
+
 ## 10. Configuration
 
 Package go.osspkg.com/mcp/config supports two mutually exclusive sources.
@@ -1119,6 +1163,7 @@ For your own tool, test:
 
 | Date | Change |
 | --- | --- |
+| 2026-09-19 | Added the stdlib-only MCP client package and runnable client example for stdio, Streamable HTTP, and legacy SSE. |
 | 2026-09-19 | Added the English API reference and developer use cases. |
 | 2026-09-19 | Added background cleanup for expired SSE sessions and their streams. |
 | 2026-09-19 | Closing an SSE handler now terminates active sessions and cleanup immediately. |
