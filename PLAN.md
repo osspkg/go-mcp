@@ -55,11 +55,11 @@ must pass `make lint` and `make tests`; transport/concurrency tasks also run
     remains available when the embedding application owns the lifecycle. HTTP
     and legacy SSE can be mounted on one listener with
     `http.NewTransportWithSSE`.
-11. **Examples and regression coverage.** Add README examples for typed tools,
-    middleware, env/YAML config, stdio, Streamable HTTP, and SSE. Test malformed
-    JSON-RPC, catalog operations, schema generation, duplicate/late
-    registration, auth, config validation, HTTP sessions and limits, SSE
-    lifecycle, shutdown, and races.
+11. **Examples and regression coverage.** Keep README examples and runnable
+    `example/` servers for typed tools, middleware, env/YAML config, stdio,
+    Streamable HTTP, and SSE. Test malformed JSON-RPC, catalog operations,
+    schema generation, duplicate/late registration, auth, config validation,
+    HTTP sessions and limits, SSE lifecycle, shutdown, and races.
 
 ## Acceptance criteria
 

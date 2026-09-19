@@ -1,0 +1,4 @@
+interface:
+  display_name: "go-mcp"
+  short_description: "Build stdlib-only MCP servers in Go"
+  default_prompt: "Use $go-mcp to build or maintain a stdlib-only MCP server with the repository's transports and lifecycle."

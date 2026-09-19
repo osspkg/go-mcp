@@ -168,6 +168,12 @@ http_address: 127.0.0.1:8080
 Nested YAML, lists, aliases, and unknown keys are rejected rather than parsed
 with ambiguous semantics.
 
+## Examples
+
+Runnable servers for each transport, middleware, and both configuration
+sources are in [`example/`](example/README.md). They use only this module and
+the Go standard library.
+
 ## Development
 
 The library runtime has no non-standard-library imports. Run the project gates:
