@@ -15,7 +15,7 @@ go run ./example/config-yaml -- example/config-yaml/server.yaml
 ## Examples
 
 - `stdio` — newline-delimited JSON-RPC over stdin/stdout.
-- `http` — Streamable HTTP on `POST /mcp`.
+- `http` — Streamable HTTP on `POST /mcp` and resumable `GET /mcp` events.
 - `sse` — legacy SSE on `/sse` and `/message`.
 - `middleware` — `Authorization` header validation.
 - `config-env` — configuration from `MCP_*` environment variables.
@@ -23,6 +23,11 @@ go run ./example/config-yaml -- example/config-yaml/server.yaml
 
 All servers run through `server.Run(transports...)`. The library automatically
 handles shutdown on `os.Interrupt` or `SIGTERM`.
+
+The HTTP transport also carries server notifications and correlated
+server-initiated requests (sampling, roots, and elicitation) over the session
+stream. See [DOC.md](../DOC.md) for Tasks, OAuth/OIDC discovery metadata, and
+tool annotations.
 
 For example, enable HTTP instead of stdio for the environment configuration
 example:

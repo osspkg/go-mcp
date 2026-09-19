@@ -29,8 +29,12 @@ and developer use cases. A Russian version is available in
 
 - MCP revision 2025-11-25 and JSON-RPC 2.0.
 - Typed tools with JSON Schema generated from Go structs and tags.
+- Tool annotations, icons, and output schemas via `RegisterToolWithOptions`.
 - Static and dynamic resources, resource templates, and prompts.
-- Stdio, Streamable HTTP, and legacy SSE transports.
+- Client features for sampling, roots, elicitation, progress, logging, and
+  cancellation.
+- Experimental durable Tasks with polling and deferred results.
+- Stdio, bidirectional Streamable HTTP, and legacy SSE transports.
 - Strict JSON-RPC request validation, bounded stdio framing, and optional request observers.
 - Shared middleware pipeline with authorization errors mapped to protocol and
   HTTP status codes.
@@ -126,7 +130,23 @@ err := server.Run(transport)
 ```
 
 The transport serves `POST /mcp` and performs graceful HTTP shutdown when
-`Run` receives a stop signal.
+`Run` receives a stop signal. It also serves `GET /mcp` as an SSE stream with
+bounded event history and `Last-Event-ID` resumption. Set `AllowedOrigins` to
+the exact origins accepted by the endpoint; non-empty unlisted origins receive
+HTTP 403.
+
+Server-to-client features use `RequestFromContext(ctx)` inside a typed handler:
+
+```go
+if request, ok := mcp.RequestFromContext(ctx); ok {
+	_ = request.SendProgress(ctx, "job-1", 1, nil, "started")
+	_, _ = request.Sample(ctx, mcp.CreateMessageParams{MaxTokens: 64})
+}
+```
+
+OAuth 2.0 Protected Resource Metadata and OAuth/OIDC discovery documents are
+available through `mcp.MarshalMetadata` and the HTTP package's
+`NewProtectedResourceMetadataHandler` / `NewAuthorizationServerMetadataHandler`.
 
 ### Legacy SSE
 

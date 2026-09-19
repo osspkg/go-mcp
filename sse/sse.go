@@ -11,12 +11,14 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"mime"
 	stdhttp "net/http"
 	"net/url"
+	"strconv"
 	"sync"
 	"time"
 
@@ -103,6 +105,8 @@ type session struct {
 	expiry   time.Time
 	messages chan []byte
 	done     chan struct{}
+	next     uint64
+	pending  map[string]chan []byte
 }
 
 // Handler serves a legacy SSE endpoint and its message endpoint.
@@ -153,6 +157,7 @@ func (handler *Handler) Close() {
 		for id, item := range handler.sessions {
 			delete(handler.sessions, id)
 			close(item.done)
+			handler.server.UnregisterPeer(id)
 		}
 		handler.cleanupRunning = false
 		handler.mu.Unlock()
@@ -229,7 +234,16 @@ func (handler *Handler) serveMessage(writer stdhttp.ResponseWriter, request *std
 		stdhttp.Error(writer, "request body too large", stdhttp.StatusRequestEntityTooLarge)
 		return
 	}
-	response, err := handler.server.ServeJSON(request.Context(), payload, mcp.RequestMeta{Transport: "sse", Headers: headers(request.Header), SessionID: id})
+	if isRPCResponse(payload) {
+		if !handler.resolveResponse(id, payload) {
+			stdhttp.Error(writer, "unknown request id", stdhttp.StatusNotFound)
+			return
+		}
+		writer.WriteHeader(stdhttp.StatusAccepted)
+		return
+	}
+	meta := mcp.RequestMeta{Transport: "sse", Headers: headers(request.Header), SessionID: id, Notify: handler.sendNotification(id), Call: handler.callClient(id)}
+	response, err := handler.server.ServeJSON(request.Context(), payload, meta)
 	if bytes.Contains(response, []byte(`"code":-32001`)) {
 		writer.WriteHeader(stdhttp.StatusUnauthorized)
 		return
@@ -274,6 +288,7 @@ func (handler *Handler) newSession() (string, *session, error) {
 		expiry:   time.Now().Add(handler.config.SessionTTL),
 		messages: make(chan []byte, messageQueueSize),
 		done:     make(chan struct{}),
+		pending:  map[string]chan []byte{},
 	}
 	handler.sessions[id] = item
 	if !handler.cleanupRunning {
@@ -281,6 +296,127 @@ func (handler *Handler) newSession() (string, *session, error) {
 		go handler.cleanupLoop()
 	}
 	return id, item, nil
+}
+
+func (handler *Handler) sendNotification(id string) mcp.NotificationSender {
+	return func(ctx context.Context, method string, params any) error { //nolint:contextcheck // callback forwards its caller context
+		payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
+		if err != nil {
+			return err
+		}
+		item := handler.getSession(id)
+		if item == nil {
+			return errors.New("mcp/sse: session not found")
+		}
+		if ctx == nil {
+			ctx = context.Background() //nolint:contextcheck // a nil caller context has no parent
+		}
+		select {
+		case item.messages <- payload:
+			return nil
+		case <-item.done:
+			return errors.New("mcp/sse: session closed")
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+func (handler *Handler) callClient(id string) mcp.ClientCaller {
+	return func(ctx context.Context, method string, params any) (json.RawMessage, error) { //nolint:contextcheck // callback forwards its caller context
+		item := handler.getSession(id)
+		if item == nil {
+			return nil, errors.New("mcp/sse: session not found")
+		}
+		handler.mu.Lock()
+		item.next++
+		requestID := id + ":req:" + strconv.FormatUint(item.next, 10)
+		waiter := make(chan []byte, 1)
+		item.pending[requestID] = waiter
+		handler.mu.Unlock()
+		payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": requestID, "method": method, "params": params})
+		if err != nil {
+			handler.mu.Lock()
+			delete(item.pending, requestID)
+			handler.mu.Unlock()
+			return nil, err
+		}
+		if ctx == nil {
+			ctx = context.Background() //nolint:contextcheck // a nil caller context has no parent
+		}
+		select {
+		case item.messages <- payload:
+		case <-item.done:
+			return nil, errors.New("mcp/sse: session closed")
+		case <-ctx.Done():
+			handler.mu.Lock()
+			delete(item.pending, requestID)
+			handler.mu.Unlock()
+			return nil, ctx.Err()
+		}
+		select {
+		case response := <-waiter:
+			var envelope struct {
+				Result json.RawMessage `json:"result"`
+				Error  *struct {
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(response, &envelope); err != nil {
+				return nil, err
+			}
+			if envelope.Error != nil {
+				return nil, errors.New(envelope.Error.Message)
+			}
+			return envelope.Result, nil
+		case <-item.done:
+			return nil, errors.New("mcp/sse: session closed")
+		case <-ctx.Done():
+			handler.mu.Lock()
+			delete(item.pending, requestID)
+			handler.mu.Unlock()
+			return nil, ctx.Err()
+		}
+	}
+}
+
+func (handler *Handler) resolveResponse(id string, payload []byte) bool {
+	var envelope struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if json.Unmarshal(payload, &envelope) != nil || len(envelope.ID) == 0 {
+		return false
+	}
+	var requestID string
+	if json.Unmarshal(envelope.ID, &requestID) != nil || requestID == "" {
+		return false
+	}
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+	item, ok := handler.sessions[id]
+	if !ok {
+		return false
+	}
+	waiter, ok := item.pending[requestID]
+	if !ok {
+		return false
+	}
+	delete(item.pending, requestID)
+	waiter <- append([]byte(nil), payload...)
+	return true
+}
+
+func isRPCResponse(payload []byte) bool {
+	var envelope struct {
+		Method string          `json:"method"`
+		ID     json.RawMessage `json:"id"`
+		Result json.RawMessage `json:"result"`
+		Error  json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(payload, &envelope) != nil || envelope.Method != "" || len(envelope.ID) == 0 {
+		return false
+	}
+	return len(envelope.Result) > 0 || len(envelope.Error) > 0
 }
 
 func (handler *Handler) getSession(id string) *session {
@@ -297,6 +433,7 @@ func (handler *Handler) deleteSession(id string) {
 		if item.done != nil {
 			close(item.done)
 		}
+		handler.server.UnregisterPeer(id)
 	}
 	handler.mu.Unlock()
 }
@@ -340,6 +477,7 @@ func (handler *Handler) expireLocked() {
 			if item.done != nil {
 				close(item.done)
 			}
+			handler.server.UnregisterPeer(id)
 		}
 	}
 }

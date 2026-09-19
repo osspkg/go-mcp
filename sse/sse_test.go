@@ -11,8 +11,10 @@ import (
 	"go.osspkg.com/mcp"
 )
 
+const testServerName = "test"
+
 func TestUnitSSEEndpointAndMessage(t *testing.T) {
-	server, err := mcp.New(mcp.ServerInfo{Name: "test", Version: "1"})
+	server, err := mcp.New(mcp.ServerInfo{Name: testServerName, Version: "1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +54,7 @@ func TestUnitSSEEndpointAndMessage(t *testing.T) {
 }
 
 func TestUnitBackgroundSessionCleanup(t *testing.T) {
-	server, err := mcp.New(mcp.ServerInfo{Name: "test", Version: "1"})
+	server, err := mcp.New(mcp.ServerInfo{Name: testServerName, Version: "1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +89,7 @@ func TestUnitBackgroundSessionCleanup(t *testing.T) {
 }
 
 func TestUnitHandlerCloseStopsSessions(t *testing.T) {
-	server, err := mcp.New(mcp.ServerInfo{Name: "test", Version: "1"})
+	server, err := mcp.New(mcp.ServerInfo{Name: testServerName, Version: "1"})
 	if err != nil {
 		t.Fatal(err)
 	}

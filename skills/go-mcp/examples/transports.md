@@ -24,9 +24,14 @@ diagnostics.
 transport := mcphttp.NewTransport(mcphttp.Config{
 	Address: ":8080",
 	Path:    "/mcp",
+	AllowedOrigins: []string{"https://client.example"},
 })
 return server.Run(transport)
 ```
+
+The Streamable HTTP handler serves resumable `GET /mcp` event streams for a
+session. Notifications and server-initiated requests use bounded
+`Last-Event-ID` history; client responses are posted back to the same endpoint.
 
 ## Legacy SSE
 

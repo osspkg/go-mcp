@@ -149,19 +149,42 @@ the caller owns the lifecycle, use RunContext instead.
 ~~~go
 type ServerInfo struct {
     Name         string
+    Title        string
     Version      string
+    Description  string
     Instructions string
+    WebsiteURL   string
+    Icons        []Icon
 }
 
 type Option func(*Server) error
 
 func New(info ServerInfo, options ...Option) (*Server, error)
 func WithMiddleware(middleware ...Middleware) Option
+func WithCapabilities(capabilities map[string]any) Option
 ~~~
 
 Name and Version are required. Instructions are returned to the client during
 initialize. WithMiddleware preserves argument order: the first middleware in
 the list receives the request first.
+
+`WithCapabilities` supplies additional fields for the `capabilities` object in
+the `initialize` response. Use it for application-defined or experimental
+features, or to explicitly configure a standard capability:
+
+~~~go
+server, err := mcp.New(info, mcp.WithCapabilities(map[string]any{
+    "experimental": map[string]any{
+        "vendor.example": map[string]any{"streaming": true},
+    },
+    "tools": map[string]any{"listChanged": true},
+}))
+~~~
+
+The map is copied when the server is created, so changing the caller's map
+later is safe. At `initialize`, built-in catalog, logging, and Tasks entries
+are added only when their top-level capability is not supplied; supplied
+top-level values take precedence and are not deep-merged.
 
 New returns an error for empty required fields, a nil option, or nil middleware.
 The server does not create a transport by itself; pass transports to Run.
@@ -173,6 +196,8 @@ type RequestMeta struct {
     Transport string
     Headers   map[string]string
     SessionID string
+    Notify    NotificationSender
+    Call      ClientCaller
 }
 
 type Request struct {
@@ -183,6 +208,7 @@ type Request struct {
 
 type Handler func(context.Context, Request) (any, error)
 type Middleware func(Handler) Handler
+func RequestFromContext(context.Context) (Request, bool)
 ~~~
 
 RequestMeta.Transport is stdio, http, or sse. HTTP and SSE pass a copy of
@@ -464,6 +490,39 @@ when the operation is appropriate, precise field descriptions, and conservative
 side-effect semantics help the model choose safely. Authorization belongs in
 middleware or application code; a tool description is not a security control.
 
+`RegisterToolWithOptions` adds the 2025-11-25 tool metadata fields:
+
+~~~go
+readOnly := true
+err := mcp.RegisterToolWithOptions(server, "lookup", "Find a customer",
+    mcp.ToolOptions{
+        Icons: []mcp.Icon{{Src: "https://example.test/icon.svg"}},
+        Annotations: &mcp.ToolAnnotations{ReadOnlyHint: &readOnly},
+    }, lookup)
+~~~
+
+The output structure is emitted as `outputSchema` automatically when it can be
+derived from the typed output; an explicit `ToolOptions.OutputSchema` overrides
+it. Tool annotations are hints, never authorization controls.
+
+Handlers can use client features without changing their typed signature:
+
+~~~go
+if request, ok := mcp.RequestFromContext(ctx); ok {
+    _ = request.SendProgress(ctx, "lookup", 1, nil, "complete")
+    _, _ = request.Sample(ctx, mcp.CreateMessageParams{MaxTokens: 128})
+    _, _ = request.ListRoots(ctx)
+    _, _ = request.Elicit(ctx, mcp.ElicitRequest{
+        Message: "Which account?",
+        RequestedSchema: map[string]any{"type": "object", "properties": map[string]any{"account": map[string]any{"type": "string"}}},
+    })
+}
+~~~
+
+`tasks/get`, `tasks/result`, and `tasks/cancel` implement the experimental
+durable task flow. Add `"task":{"ttl":60000}` to a `tools/call` request to
+receive a task handle immediately, then poll its status and result.
+
 ## 5. Typed tools and JSON Schema
 
 The primary tool API is a generic function:
@@ -616,11 +675,14 @@ Supported methods:
 | resources/list | static resources |
 | resources/templates/list | URI templates |
 | resources/read | read a static or dynamic resource |
+| resources/subscribe, resources/unsubscribe | resource update subscriptions |
 | prompts/list | prompts and arguments |
 | prompts/get | retrieve prompt messages |
+| logging/setLevel | select the minimum log level |
+| tasks/get, tasks/result, tasks/cancel, tasks/list | durable task state and results |
 
-The initialize response declares protocol version 2025-11-25 and tools,
-resources, and prompts capabilities. Unknown methods receive -32601, invalid
+The initialize response declares protocol version 2025-11-25 and advertises
+tools, resources, prompts, logging, and task capabilities. Unknown methods receive -32601, invalid
 parameters receive -32602, and malformed JSON receives -32700. A JSON-RPC
 notification without an id does not require a response.
 
@@ -667,6 +729,13 @@ subsequent requests must send the same header. The transport supports body
 limits, session TTL and maximum sessions, read/write/idle timeouts, and graceful
 shutdown. CORS is not enabled by default.
 
+GET /mcp with Mcp-Session-Id opens a text/event-stream. Server notifications
+and server-initiated requests carry bounded, session-scoped event IDs. Clients
+can reconnect with Last-Event-ID; retained events are replayed. HTTP POST also
+accepts correlated JSON-RPC responses for server-initiated requests. Configure
+AllowedOrigins with an explicit allowlist; an unlisted non-empty Origin receives
+403.
+
 To mount the handler in an existing mux:
 
 ~~~go
@@ -686,6 +755,15 @@ srv := mcphttp.Server(ctx, mcphttp.ServerConfig{
 })
 err := srv.ListenAndServe()
 ~~~
+
+### OAuth and OpenID Connect discovery
+
+The core package only models discovery documents; it does not issue tokens or
+install an authentication provider. Build a RFC 9728 protected-resource
+document with `mcp.ProtectedResourceMetadata` and an authorization-server or
+OIDC document with `mcp.AuthorizationServerMetadata`. `mcphttp` provides
+`NewProtectedResourceMetadataHandler` and
+`NewAuthorizationServerMetadataHandler` for mounting the JSON endpoints.
 
 ### Legacy SSE
 

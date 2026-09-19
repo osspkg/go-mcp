@@ -32,18 +32,20 @@ var (
 // ServerInfo identifies a server during MCP initialization.
 type ServerInfo struct {
 	Name         string
+	Title        string
 	Version      string
 	Description  string
 	Instructions string
+	WebsiteURL   string
 	Icons        []Icon
 }
 
 // Icon describes an icon advertised by an MCP implementation or capability.
 type Icon struct {
-	Src      string `json:"src"`
-	MIMEType string `json:"mimeType,omitempty"`
-	Theme    string `json:"theme,omitempty"`
-	Size     string `json:"size,omitempty"`
+	Src      string   `json:"src"`
+	MIMEType string   `json:"mimeType,omitempty"`
+	Theme    string   `json:"theme,omitempty"`
+	Sizes    []string `json:"sizes,omitempty"`
 }
 
 // RequestMeta is transport-provided request information available to middleware.
@@ -66,6 +68,45 @@ type Request struct {
 	Method string
 	Params json.RawMessage
 	Meta   RequestMeta
+}
+
+type requestContextKey struct{}
+
+// RequestFromContext retrieves the current MCP request from a handler context.
+// It enables typed tool/resource handlers to use client features such as
+// sampling and elicitation without changing their existing signatures.
+func RequestFromContext(ctx context.Context) (Request, bool) {
+	if ctx == nil {
+		return Request{}, false
+	}
+	request, ok := ctx.Value(requestContextKey{}).(Request)
+	return request, ok
+}
+
+// ProgressToken is an opaque token supplied by a client for progress updates.
+// It is encoded as either a string or a number by the JSON-RPC protocol.
+type ProgressToken any
+
+// SendProgress reports progress for the current request when the transport
+// supports client notifications.
+func (request Request) SendProgress(ctx context.Context, token ProgressToken, progress float64, total *float64, message string) error {
+	params := map[string]any{"progressToken": token, "progress": progress}
+	if total != nil {
+		params["total"] = *total
+	}
+	if message != "" {
+		params["message"] = message
+	}
+	return request.SendNotification(ctx, "notifications/progress", params)
+}
+
+// Log sends a notifications/message log entry to the client.
+func (request Request) Log(ctx context.Context, level LogLevel, data any, logger string) error {
+	params := map[string]any{"level": level, "data": data}
+	if logger != "" {
+		params["logger"] = logger
+	}
+	return request.SendNotification(ctx, "notifications/message", params)
 }
 
 // SendNotification sends a notification when the transport supports it.
@@ -137,25 +178,69 @@ func WithRequestObserver(observers ...RequestObserver) Option {
 type Server struct {
 	info ServerInfo
 
-	mu           sync.RWMutex
-	started      bool
-	middleware   []Middleware
-	observers    []RequestObserver
-	tools        map[string]tool
-	resources    map[string]Resource
-	templates    []ResourceTemplate
-	prompts      map[string]Prompt
-	active       map[string]context.CancelFunc
-	capabilities map[string]any
+	mu            sync.RWMutex
+	started       bool
+	middleware    []Middleware
+	observers     []RequestObserver
+	tools         map[string]tool
+	resources     map[string]Resource
+	templates     []ResourceTemplate
+	prompts       map[string]Prompt
+	active        map[string]context.CancelFunc
+	capabilities  map[string]any
+	peers         map[string]peer
+	tasks         map[string]*taskRecord
+	subscriptions map[string]map[string]struct{}
+	logLevel      LogLevel
 }
 
 func mapsClone(input map[string]any) map[string]any {
+	return mapsCloneDepth(input, 0)
+}
+
+const maxMetadataCloneDepth = 64
+
+func mapsCloneDepth(input map[string]any, depth int) map[string]any {
 	if input == nil {
 		return nil
 	}
 	output := make(map[string]any, len(input))
 	for key, value := range input {
-		output[key] = value
+		output[key] = cloneMetadataValue(value, depth+1)
+	}
+	return output
+}
+
+func cloneMetadataValue(value any, depth int) any {
+	if depth > maxMetadataCloneDepth {
+		return value
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		return mapsCloneDepth(typed, depth)
+	case []any:
+		output := make([]any, len(typed))
+		for index, item := range typed {
+			output[index] = cloneMetadataValue(item, depth+1)
+		}
+		return output
+	case []string:
+		return slices.Clone(typed)
+	case []Icon:
+		return cloneIcons(typed)
+	default:
+		return value
+	}
+}
+
+func cloneIcons(input []Icon) []Icon {
+	if input == nil {
+		return nil
+	}
+	output := make([]Icon, len(input))
+	for index, icon := range input {
+		output[index] = icon
+		output[index].Sizes = slices.Clone(icon.Sizes)
 	}
 	return output
 }
@@ -169,13 +254,16 @@ func New(info ServerInfo, options ...Option) (*Server, error) {
 		return nil, errors.New("mcp: server version is required")
 	}
 	server := &Server{
-		info:      info,
-		tools:     map[string]tool{},
-		resources: map[string]Resource{},
-		prompts:   map[string]Prompt{},
-		active:    map[string]context.CancelFunc{},
+		info:          info,
+		tools:         map[string]tool{},
+		resources:     map[string]Resource{},
+		prompts:       map[string]Prompt{},
+		active:        map[string]context.CancelFunc{},
+		peers:         map[string]peer{},
+		tasks:         map[string]*taskRecord{},
+		subscriptions: map[string]map[string]struct{}{},
 	}
-	server.info.Icons = slices.Clone(info.Icons)
+	server.info.Icons = cloneIcons(info.Icons)
 	for _, option := range options {
 		if option == nil {
 			return nil, errors.New("mcp: nil option")
@@ -207,10 +295,54 @@ func (server *Server) registerTool(item tool) error {
 }
 
 type tool struct {
-	name        string
-	description string
-	inputSchema map[string]any
-	call        func(context.Context, json.RawMessage) (any, error)
+	name         string
+	description  string
+	inputSchema  map[string]any
+	outputSchema map[string]any
+	annotations  *ToolAnnotations
+	icons        []Icon
+	taskSupport  string
+	call         func(context.Context, json.RawMessage) (any, error)
+}
+
+// ToolAnnotations contains optional behavioral hints for a tool. Hints are
+// advisory and must not be treated as a security boundary by clients.
+type ToolAnnotations struct {
+	Title           string `json:"title,omitempty"`
+	ReadOnlyHint    *bool  `json:"readOnlyHint,omitempty"`
+	DestructiveHint *bool  `json:"destructiveHint,omitempty"`
+	IdempotentHint  *bool  `json:"idempotentHint,omitempty"`
+	OpenWorldHint   *bool  `json:"openWorldHint,omitempty"`
+}
+
+// ToolOptions configures optional metadata exposed in tools/list.
+type ToolOptions struct {
+	Icons        []Icon
+	Annotations  *ToolAnnotations
+	OutputSchema map[string]any
+	TaskSupport  string
+}
+
+func cloneToolOptions(options ToolOptions) ToolOptions {
+	options.Icons = cloneIcons(options.Icons)
+	if options.Annotations != nil {
+		annotations := *options.Annotations
+		annotations.ReadOnlyHint = cloneBoolPointer(annotations.ReadOnlyHint)
+		annotations.DestructiveHint = cloneBoolPointer(annotations.DestructiveHint)
+		annotations.IdempotentHint = cloneBoolPointer(annotations.IdempotentHint)
+		annotations.OpenWorldHint = cloneBoolPointer(annotations.OpenWorldHint)
+		options.Annotations = &annotations
+	}
+	options.OutputSchema = mapsClone(options.OutputSchema)
+	return options
+}
+
+func cloneBoolPointer(input *bool) *bool {
+	if input == nil {
+		return nil
+	}
+	value := *input
+	return &value
 }
 
 // ToolHandler processes typed input and produces typed output.
@@ -219,6 +351,12 @@ type ToolHandler[In json.Unmarshaler, Out json.Marshaler] func(context.Context, 
 // RegisterTool adds a typed MCP tool. In and Out must be pointers to structs
 // implementing json.Unmarshaler and json.Marshaler respectively.
 func RegisterTool[In json.Unmarshaler, Out json.Marshaler](server *Server, name, description string, handler ToolHandler[In, Out]) error {
+	return RegisterToolWithOptions[In, Out](server, name, description, ToolOptions{}, handler)
+}
+
+// RegisterToolWithOptions adds a typed tool with optional annotations, icons,
+// and a JSON Schema for structured output.
+func RegisterToolWithOptions[In json.Unmarshaler, Out json.Marshaler](server *Server, name, description string, options ToolOptions, handler ToolHandler[In, Out]) error {
 	if server == nil {
 		return errors.New("mcp: nil server")
 	}
@@ -230,8 +368,24 @@ func RegisterTool[In json.Unmarshaler, Out json.Marshaler](server *Server, name,
 	if err != nil {
 		return fmt.Errorf("mcp: tool %q schema: %w", name, err)
 	}
+	options = cloneToolOptions(options)
+	if options.TaskSupport != "" && options.TaskSupport != "forbidden" && options.TaskSupport != "optional" && options.TaskSupport != "required" {
+		return fmt.Errorf("mcp: tool %q has invalid task support %q", name, options.TaskSupport)
+	}
+	if options.TaskSupport == "" {
+		options.TaskSupport = "optional"
+	}
+	if options.OutputSchema == nil {
+		if outputSchema, outputErr := schemaFor(reflect.TypeFor[Out]()); outputErr == nil {
+			options.OutputSchema = outputSchema
+		}
+	}
+	if options.OutputSchema != nil {
+		options.OutputSchema = mapsClone(options.OutputSchema)
+	}
 	return server.registerTool(tool{
 		name: name, description: description, inputSchema: schema,
+		outputSchema: options.OutputSchema, annotations: options.Annotations, icons: options.Icons, taskSupport: options.TaskSupport,
 		call: func(ctx context.Context, raw json.RawMessage) (any, error) {
 			value := reflect.New(typeOfInput.Elem()).Interface()
 			input, ok := value.(In)
@@ -253,8 +407,8 @@ func RegisterTool[In json.Unmarshaler, Out json.Marshaler](server *Server, name,
 			if err := json.Unmarshal(encoded, &structured); err != nil {
 				return nil, fmt.Errorf("decoding tool result: %w", err)
 			}
-			return map[string]any{
-				"content":           []any{map[string]any{"type": "text", "text": string(encoded)}},
+			return map[string]any{ //nolint:goconst // protocol field names
+				"content":           []any{map[string]any{"type": "text", "text": string(encoded)}}, //nolint:goconst // protocol field name
 				"structuredContent": structured,
 			}, nil
 		},

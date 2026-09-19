@@ -9,9 +9,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
+)
+
+const (
+	mimeTypeField = "mimeType"
+	uriField      = "uri"
 )
 
 type rpcRequest struct {
@@ -31,6 +38,7 @@ type rpcResponse struct {
 type rpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
+	Data    any    `json:"data,omitempty"`
 }
 
 type toolResultError struct{ result any }
@@ -47,12 +55,12 @@ func (err protocolError) Error() string { return err.message }
 // ServeJSON processes one JSON-RPC request. A nil response represents a JSON-RPC notification.
 func (server *Server) ServeJSON(ctx context.Context, payload []byte, meta RequestMeta) ([]byte, error) {
 	if ctx == nil {
-		ctx = context.Background()
+		ctx = context.Background() //nolint:contextcheck // a nil transport context has no parent
 	}
 	server.seal()
 	var request rpcRequest
 	if err := json.Unmarshal(payload, &request); err != nil {
-		return encodeResponse(rpcResponse{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &rpcError{Code: -32700, Message: "parse error"}})
+		return encodeResponse(rpcResponse{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &rpcError{Code: -32700, Message: "parse error"}}) //nolint:goconst // JSON-RPC wire literal
 	}
 	if request.JSONRPC != "2.0" || request.Method == "" || !validRequestID(request.ID) || !validParams(request.Params) {
 		return encodeResponse(rpcResponse{JSONRPC: "2.0", ID: responseID(request.ID), Error: &rpcError{Code: -32600, Message: "invalid request"}})
@@ -64,15 +72,17 @@ func (server *Server) ServeJSON(ctx context.Context, payload []byte, meta Reques
 	}
 	server.mu.RUnlock()
 	observed := Request{Method: request.Method, Params: request.Params, Meta: meta}
+	server.registerPeer(meta.SessionID, meta)
 	started := time.Now()
 	defer func() { server.observe(ctx, observed, time.Since(started)) }()
 	requestCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	requestCtx = context.WithValue(requestCtx, requestContextKey{}, observed)
 	if len(request.ID) > 0 {
 		server.trackRequest(request.ID, cancel)
 		defer server.untrackRequest(request.ID)
 	}
-	result, err := handler(requestCtx, observed)
+	result, err := invokeHandler(requestCtx, handler, observed)
 	if len(request.ID) == 0 {
 		return nil, nil
 	}
@@ -85,9 +95,22 @@ func (server *Server) ServeJSON(ctx context.Context, payload []byte, meta Reques
 		if errors.As(err, &toolErr) {
 			return encodeResponse(rpcResponse{JSONRPC: "2.0", ID: responseID(request.ID), Result: toolErr.result})
 		}
+		var elicitationErr URLElicitationRequiredError
+		if errors.As(err, &elicitationErr) {
+			return encodeResponse(rpcResponse{JSONRPC: "2.0", ID: responseID(request.ID), Error: &rpcError{Code: -32042, Message: "URL elicitation required", Data: map[string]any{"elicitations": elicitationErr.Elicitations}}})
+		}
 		return encodeResponse(rpcResponse{JSONRPC: "2.0", ID: responseID(request.ID), Error: errorFor(err)})
 	}
 	return encodeResponse(rpcResponse{JSONRPC: "2.0", ID: request.ID, Result: result})
+}
+
+func invokeHandler(ctx context.Context, handler Handler, request Request) (result any, err error) { //nolint:nonamedreturns // panic recovery replaces the returned error
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("mcp: handler panic: %v", recovered)
+		}
+	}()
+	return handler(ctx, request)
 }
 
 func (server *Server) observe(ctx context.Context, request Request, duration time.Duration) {
@@ -169,6 +192,20 @@ func (server *Server) dispatch(ctx context.Context, request Request) (any, error
 		return map[string]any{}, nil
 	case "$/cancelRequest":
 		return nil, server.cancelRequest(request.Params)
+	case "notifications/cancelled":
+		return nil, server.cancelRequest(request.Params)
+	case "notifications/elicitation/complete":
+		return map[string]any{}, nil
+	case "logging/setLevel":
+		return server.setLogLevel(request.Params)
+	case "tasks/get":
+		return server.getTask(ctx, request.Params)
+	case "tasks/result":
+		return server.getTaskResult(request.Params)
+	case "tasks/cancel":
+		return server.cancelTask(ctx, request.Params)
+	case "tasks/list":
+		return server.listTasks()
 	case "tools/list":
 		return server.listTools(), nil
 	case "tools/call":
@@ -179,6 +216,10 @@ func (server *Server) dispatch(ctx context.Context, request Request) (any, error
 		return server.listTemplates(), nil
 	case "resources/read":
 		return server.readResource(ctx, request.Params)
+	case "resources/subscribe":
+		return server.subscribeResource(request)
+	case "resources/unsubscribe":
+		return server.unsubscribeResource(request)
 	case "prompts/list":
 		return server.listPrompts(), nil
 	case "prompts/get":
@@ -186,6 +227,41 @@ func (server *Server) dispatch(ctx context.Context, request Request) (any, error
 	default:
 		return nil, protocolError{code: -32601, message: "method not found"}
 	}
+}
+
+func (server *Server) setLogLevel(params json.RawMessage) (any, error) {
+	var input struct {
+		Level LogLevel `json:"level"`
+	}
+	if err := json.Unmarshal(params, &input); err != nil || !validLogLevel(input.Level) {
+		return nil, protocolError{code: -32602, message: "invalid logging level"}
+	}
+	server.mu.Lock()
+	server.logLevel = input.Level
+	server.mu.Unlock()
+	return map[string]any{}, nil
+}
+
+func (server *Server) subscribeResource(request Request) (any, error) {
+	var input struct {
+		URI string `json:"uri"`
+	}
+	if err := json.Unmarshal(request.Params, &input); err != nil || input.URI == "" {
+		return nil, protocolError{code: -32602, message: "invalid resource subscription"}
+	}
+	server.subscribe(request.Meta.SessionID, input.URI)
+	return map[string]any{}, nil
+}
+
+func (server *Server) unsubscribeResource(request Request) (any, error) {
+	var input struct {
+		URI string `json:"uri"`
+	}
+	if err := json.Unmarshal(request.Params, &input); err != nil || input.URI == "" {
+		return nil, protocolError{code: -32602, message: "invalid resource subscription"}
+	}
+	server.unsubscribe(request.Meta.SessionID, input.URI)
+	return map[string]any{}, nil
 }
 
 func (server *Server) cancelRequest(params json.RawMessage) error {
@@ -209,19 +285,52 @@ func (server *Server) initialize() map[string]any {
 	if capabilities == nil {
 		capabilities = map[string]any{}
 	}
+	server.mu.RLock()
+	hasTools := len(server.tools) > 0
+	hasResources := len(server.resources) > 0 || len(server.templates) > 0
+	hasPrompts := len(server.prompts) > 0
+	server.mu.RUnlock()
+	if hasTools {
+		if _, exists := capabilities["tools"]; !exists {
+			capabilities["tools"] = map[string]any{"listChanged": true} //nolint:goconst // capability field name
+		}
+	}
+	if hasResources {
+		if _, exists := capabilities["resources"]; !exists {
+			capabilities["resources"] = map[string]any{"listChanged": true, "subscribe": true}
+		}
+	}
+	if hasPrompts {
+		if _, exists := capabilities["prompts"]; !exists {
+			capabilities["prompts"] = map[string]any{"listChanged": true}
+		}
+	}
+	if _, exists := capabilities["logging"]; !exists {
+		capabilities["logging"] = map[string]any{}
+	}
+	if _, exists := capabilities["tasks"]; !exists {
+		capabilities["tasks"] = map[string]any{"cancel": map[string]any{}, "list": map[string]any{}, "requests": map[string]any{"tools": map[string]any{"call": map[string]any{}}}}
+	}
+	serverInfo := map[string]any{"name": server.info.Name, "version": server.info.Version} //nolint:goconst // protocol field names
 	result := map[string]any{
 		"protocolVersion": "2025-11-25",
 		"capabilities":    capabilities,
-		"serverInfo":      map[string]any{"name": server.info.Name, "version": server.info.Version},
+		"serverInfo":      serverInfo,
 	}
 	if server.info.Instructions != "" {
 		result["instructions"] = server.info.Instructions
 	}
 	if server.info.Description != "" {
-		result["serverInfo"].(map[string]any)["description"] = server.info.Description
+		serverInfo["description"] = server.info.Description
+	}
+	if server.info.Title != "" {
+		serverInfo["title"] = server.info.Title
+	}
+	if server.info.WebsiteURL != "" {
+		serverInfo["websiteUrl"] = server.info.WebsiteURL
 	}
 	if len(server.info.Icons) > 0 {
-		result["serverInfo"].(map[string]any)["icons"] = server.info.Icons
+		serverInfo["icons"] = server.info.Icons
 	}
 	return result
 }
@@ -232,15 +341,36 @@ func (server *Server) listTools() map[string]any {
 	items := make([]any, 0, len(server.tools))
 	for _, name := range sortedKeys(server.tools) {
 		item := server.tools[name]
-		items = append(items, map[string]any{"name": item.name, "description": item.description, "inputSchema": item.inputSchema})
+		entry := map[string]any{"name": item.name, "description": item.description, "inputSchema": item.inputSchema} //nolint:goconst // protocol field names
+		if item.outputSchema != nil {
+			entry["outputSchema"] = item.outputSchema
+		}
+		if item.annotations != nil {
+			entry["annotations"] = item.annotations
+		}
+		if len(item.icons) > 0 {
+			entry["icons"] = item.icons
+		}
+		if item.taskSupport != "" {
+			entry["execution"] = map[string]any{"taskSupport": item.taskSupport}
+		}
+		items = append(items, entry)
 	}
 	return map[string]any{"tools": items}
+}
+
+func toolErrorResult() map[string]any {
+	return map[string]any{
+		"content": []any{map[string]any{"type": "text", "text": "tool execution failed"}}, //nolint:goconst // protocol field name
+		"isError": true,
+	}
 }
 
 func (server *Server) callTool(ctx context.Context, params json.RawMessage) (any, error) {
 	var input struct {
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments"`
+		Task      *TaskMetadata   `json:"task,omitempty"`
 	}
 	if err := json.Unmarshal(params, &input); err != nil || input.Name == "" {
 		return nil, protocolError{code: -32602, message: "invalid tool parameters"}
@@ -254,14 +384,88 @@ func (server *Server) callTool(ctx context.Context, params json.RawMessage) (any
 	if len(input.Arguments) == 0 {
 		input.Arguments = json.RawMessage("{}")
 	}
+	if input.Task != nil {
+		if input.Task.TTL < 0 || input.Task.TTL > maxTaskTTLMillis {
+			return nil, protocolError{code: -32602, message: "invalid task TTL"}
+		}
+		ttl := time.Duration(input.Task.TTL) * time.Millisecond
+		task, err := server.startTask(ctx, ttl, func(taskCtx context.Context) (any, error) {
+			result, callErr := item.call(taskCtx, input.Arguments)
+			if callErr != nil {
+				return toolErrorResult(), nil //nolint:nilerr // tool errors are protocol results
+			}
+			return result, nil
+		}, true)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"task": task}, nil
+	}
 	result, err := item.call(ctx, input.Arguments)
 	if err != nil {
-		return nil, toolResultError{result: map[string]any{
-			"content": []any{map[string]any{"type": "text", "text": "tool execution failed"}},
-			"isError": true,
-		}}
+		return nil, toolResultError{result: toolErrorResult()}
 	}
 	return result, nil
+}
+
+func (server *Server) getTask(ctx context.Context, params json.RawMessage) (any, error) {
+	var input struct {
+		TaskID string `json:"taskId"`
+	}
+	if err := json.Unmarshal(params, &input); err != nil || input.TaskID == "" {
+		return nil, protocolError{code: -32602, message: "invalid task parameters"} //nolint:goconst // shared protocol error
+	}
+	task, err := server.GetTask(ctx, input.TaskID)
+	if err != nil {
+		return nil, protocolError{code: -32004, message: "task not found"} //nolint:goconst // shared protocol error
+	}
+	return task, nil
+}
+
+func (server *Server) getTaskResult(params json.RawMessage) (any, error) {
+	var input struct {
+		TaskID string `json:"taskId"`
+	}
+	if err := json.Unmarshal(params, &input); err != nil || input.TaskID == "" {
+		return nil, protocolError{code: -32602, message: "invalid task parameters"}
+	}
+	result, err := server.taskResult(input.TaskID)
+	if err != nil {
+		if errors.Is(err, ErrTaskNotReady) {
+			return nil, protocolError{code: -32005, message: "task result is not ready"}
+		}
+		if errors.Is(err, ErrTaskNotFound) {
+			return nil, protocolError{code: -32004, message: "task not found"}
+		}
+		return nil, err
+	}
+	return result, nil
+}
+
+func (server *Server) cancelTask(ctx context.Context, params json.RawMessage) (any, error) {
+	var input struct {
+		TaskID string `json:"taskId"`
+	}
+	if err := json.Unmarshal(params, &input); err != nil || input.TaskID == "" {
+		return nil, protocolError{code: -32602, message: "invalid task parameters"}
+	}
+	task, err := server.CancelTask(ctx, input.TaskID)
+	if err != nil {
+		return nil, protocolError{code: -32004, message: "task not found"}
+	}
+	return task, nil
+}
+
+func (server *Server) listTasks() (any, error) {
+	server.mu.Lock()
+	server.cleanupTasksLocked(time.Now())
+	items := make([]Task, 0, len(server.tasks))
+	for _, record := range server.tasks {
+		items = append(items, record.snapshot())
+	}
+	server.mu.Unlock()
+	sort.Slice(items, func(left, right int) bool { return items[left].TaskID < items[right].TaskID })
+	return map[string]any{"tasks": items}, nil
 }
 
 func (server *Server) listResources() map[string]any {
@@ -270,7 +474,11 @@ func (server *Server) listResources() map[string]any {
 	items := make([]any, 0, len(server.resources))
 	for _, uri := range sortedKeys(server.resources) {
 		item := server.resources[uri]
-		items = append(items, map[string]any{"uri": item.URI, "name": item.Name, "description": item.Description, "mimeType": item.MIMEType, "icons": item.Icons})
+		entry := map[string]any{uriField: item.URI, "name": item.Name, "description": item.Description, mimeTypeField: item.MIMEType}
+		if len(item.Icons) > 0 {
+			entry["icons"] = item.Icons
+		}
+		items = append(items, entry)
 	}
 	return map[string]any{"resources": items}
 }
@@ -280,7 +488,11 @@ func (server *Server) listTemplates() map[string]any {
 	defer server.mu.RUnlock()
 	items := make([]any, 0, len(server.templates))
 	for _, item := range server.templates {
-		items = append(items, map[string]any{"uriTemplate": item.URITemplate, "name": item.Name, "description": item.Description, "mimeType": item.MIMEType, "icons": item.Icons})
+		entry := map[string]any{"uriTemplate": item.URITemplate, "name": item.Name, "description": item.Description, mimeTypeField: item.MIMEType}
+		if len(item.Icons) > 0 {
+			entry["icons"] = item.Icons
+		}
+		items = append(items, entry)
 	}
 	return map[string]any{"resourceTemplates": items}
 }
@@ -315,7 +527,7 @@ func (server *Server) readResource(ctx context.Context, params json.RawMessage) 
 	if !static {
 		return nil, protocolError{code: -32004, message: "resource not found"}
 	}
-	return map[string]any{"contents": []any{map[string]any{"uri": input.URI, "mimeType": item.MIMEType, "text": item.Text}}}, nil
+	return map[string]any{"contents": []any{map[string]any{uriField: input.URI, mimeTypeField: item.MIMEType, "text": item.Text}}}, nil
 }
 
 func matchTemplate(template, uri string) (map[string]string, bool) {
@@ -347,7 +559,11 @@ func (server *Server) listPrompts() map[string]any {
 	items := make([]any, 0, len(server.prompts))
 	for _, name := range sortedKeys(server.prompts) {
 		item := server.prompts[name]
-		items = append(items, map[string]any{"name": item.Name, "description": item.Description, "arguments": item.Arguments, "icons": item.Icons})
+		entry := map[string]any{"name": item.Name, "description": item.Description, "arguments": item.Arguments}
+		if len(item.Icons) > 0 {
+			entry["icons"] = item.Icons
+		}
+		items = append(items, entry)
 	}
 	return map[string]any{"prompts": items}
 }

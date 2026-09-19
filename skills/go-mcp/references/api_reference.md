@@ -27,6 +27,23 @@ server, err := mcp.New(mcp.ServerInfo{
 })
 ```
 
+`ServerInfo` may also include a title, description, website URL, and icon
+descriptors. `WithCapabilities` adds application-specific capability fields;
+the runtime derives standard catalog, logging, and task capabilities.
+
+Use it for experimental or vendor-defined capabilities, or to override a
+top-level standard capability:
+
+```go
+mcp.WithCapabilities(map[string]any{
+	"experimental": map[string]any{"vendor.example": map[string]any{"enabled": true}},
+})
+```
+
+The map is copied at construction. During `initialize`, built-in capability
+defaults are added only for missing top-level keys; supplied values are kept
+as-is rather than deep-merged.
+
 Register every catalog item before starting a transport. The first request
 seals the registry, after which registration returns `mcp.ErrStarted`.
 Duplicate tool, resource, template, and prompt names are rejected.
@@ -115,9 +132,15 @@ JSON-RPC response uses safe messages/codes; HTTP transports additionally use
 
 The dispatcher implements `initialize`, `ping`, `tools/list`, `tools/call`,
 `resources/list`, `resources/templates/list`, `resources/read`, `prompts/list`,
-and `prompts/get`. Malformed JSON-RPC, invalid params, unknown methods, and
-missing catalog entries produce safe JSON-RPC errors rather than panics or
-implementation details.
+`prompts/get`, subscriptions, logging, and Tasks. Malformed JSON-RPC, invalid
+params, unknown methods, and missing catalog entries produce safe JSON-RPC
+errors rather than panics or implementation details.
+
+The core also exposes `RequestFromContext` for typed handlers. A request's
+`Notify` and `Call` callbacks support progress/logging notifications and
+server-initiated sampling, roots, and elicitation requests. Use
+`RegisterToolWithOptions` for tool annotations, icons, `outputSchema`, and
+task support.
 
 For transport details, consult the official
 [MCP transport specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)

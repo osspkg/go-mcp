@@ -150,19 +150,43 @@ Run сам создаёт контекст, который отменяется 
 ~~~go
 type ServerInfo struct {
     Name         string
+    Title        string
     Version      string
+    Description  string
     Instructions string
+    WebsiteURL   string
+    Icons        []Icon
 }
 
 type Option func(*Server) error
 
 func New(info ServerInfo, options ...Option) (*Server, error)
 func WithMiddleware(middleware ...Middleware) Option
+func WithCapabilities(capabilities map[string]any) Option
 ~~~
 
 Name и Version обязательны. Instructions передаются клиенту в ответе
 initialize. WithMiddleware сохраняет порядок аргументов: первый middleware в
 списке получает запрос первым.
+
+`WithCapabilities` добавляет поля в объект `capabilities` ответа
+`initialize`. Он нужен для application-defined/experimental возможностей или
+для явной настройки стандартной capability:
+
+~~~go
+server, err := mcp.New(info, mcp.WithCapabilities(map[string]any{
+    "experimental": map[string]any{
+        "vendor.example": map[string]any{"streaming": true},
+    },
+    "tools": map[string]any{"listChanged": true},
+}))
+~~~
+
+Карта копируется при создании сервера, поэтому её последующее изменение
+вызывающим кодом безопасно. Во время `initialize` встроенные capabilities
+каталога, logging и Tasks добавляются только если соответствующий верхний
+уровень не задан. Переданные верхнеуровневые значения имеют приоритет и не
+объединяются глубоко.
 
 New возвращает ошибку для пустых обязательных полей, nil option или nil
 middleware. Сервер не готовит транспорт сам: транспорт передаётся в Run.
@@ -174,6 +198,8 @@ type RequestMeta struct {
     Transport string
     Headers   map[string]string
     SessionID string
+    Notify    NotificationSender
+    Call      ClientCaller
 }
 
 type Request struct {
@@ -184,11 +210,14 @@ type Request struct {
 
 type Handler func(context.Context, Request) (any, error)
 type Middleware func(Handler) Handler
+func RequestFromContext(context.Context) (Request, bool)
 ~~~
 
 RequestMeta.Transport имеет значение stdio, http или sse. HTTP и SSE передают
 копию входящих заголовков и идентификатор MCP-сессии. Middleware может получить
-метод из Request.Method, а отмену — из context.Context.
+метод из Request.Method, а отмену — из context.Context. `RequestFromContext`
+позволяет typed handler отправлять progress/logging notifications и выполнять
+sampling, roots и elicitation-запросы к клиенту.
 
 ### Прямой JSON-RPC вызов
 
@@ -465,6 +494,15 @@ result с `isError: true`; детали реализации модели не �
 операцию безопасно. Авторизация должна находиться в middleware или коде
 приложения: описание tool не является механизмом безопасности.
 
+`RegisterToolWithOptions` добавляет метаданные MCP 2025-11-25: icons,
+annotations и outputSchema. Если outputSchema не задан явно, он выводится из
+типизированного результата.
+
+Клиентские sampling, roots, elicitation, progress и logging доступны внутри
+typed handler через `RequestFromContext(ctx)`. Методы `tasks/get`,
+`tasks/result` и `tasks/cancel` поддерживают experimental durable tasks:
+добавьте `"task":{"ttl":60000}` к `tools/call`, а затем опрашивайте handle.
+
 ## 5. Typed tools и JSON Schema
 
 Основной API инструмента — generic-функция:
@@ -617,11 +655,14 @@ server, err := mcp.New(info, mcp.WithMiddleware(requireToken))
 | resources/list | статические resources |
 | resources/templates/list | URI templates |
 | resources/read | чтение статического или динамического resource |
+| resources/subscribe, resources/unsubscribe | подписки на обновления resource |
 | prompts/list | список prompts и аргументов |
 | prompts/get | получение сообщений prompt |
+| logging/setLevel | выбор минимального уровня логирования |
+| tasks/get, tasks/result, tasks/cancel, tasks/list | состояние и результаты durable task |
 
 Ответ initialize объявляет protocol version 2025-11-25 и capabilities
-tools/resources/prompts. Неизвестный метод получает -32601, неверные параметры
+tools/resources/prompts/logging/tasks. Неизвестный метод получает -32601, неверные параметры
 — -32602, некорректный JSON — -32700. JSON-RPC notification без id не требует
 ответа.
 
@@ -669,6 +710,13 @@ Mcp-Session-Id; последующие запросы должны переда�
 Поддерживаются ограничения тела, TTL и максимальное число сессий, read/write/
 idle timeout и graceful shutdown. CORS не добавляется автоматически.
 
+GET /mcp с Mcp-Session-Id открывает text/event-stream. Уведомления сервера и
+server-initiated requests получают ограниченные session-scoped event IDs.
+Клиент может переподключиться с Last-Event-ID и получить сохранённые события.
+POST принимает коррелированные JSON-RPC responses для server-initiated requests.
+Задайте явный allowlist в AllowedOrigins: непустой Origin вне списка получает
+403.
+
 Для встраивания в существующий mux используйте:
 
 ~~~go
@@ -688,6 +736,15 @@ srv := mcphttp.Server(ctx, mcphttp.ServerConfig{
 })
 err := srv.ListenAndServe()
 ~~~
+
+### Discovery OAuth и OpenID Connect
+
+Core-пакет только моделирует discovery-документы и не выпускает токены и не
+подключает authentication provider. `mcp.ProtectedResourceMetadata` описывает
+защищённый resource по RFC 9728, а `mcp.AuthorizationServerMetadata` —
+authorization server или OIDC discovery. HTTP-пакет предоставляет handlers
+`NewProtectedResourceMetadataHandler` и
+`NewAuthorizationServerMetadataHandler`.
 
 ### Legacy SSE
 

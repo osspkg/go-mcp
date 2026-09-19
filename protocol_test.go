@@ -31,13 +31,17 @@ type recursiveInput struct {
 	Next *recursiveInput `json:"next,omitempty"`
 }
 
+const pingMethod = "ping"
+
+const testServerName = "test"
+
 func (input *recursiveInput) UnmarshalJSON(data []byte) error {
 	type plain recursiveInput
 	return json.Unmarshal(data, (*plain)(input))
 }
 
 func TestUnitRegisterToolAndCall(t *testing.T) {
-	server, err := New(ServerInfo{Name: "test", Version: "1"})
+	server, err := New(ServerInfo{Name: testServerName, Version: "1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,8 +67,24 @@ func TestUnitRegisterToolAndCall(t *testing.T) {
 	}
 }
 
+func TestUnitHandlerPanicBecomesProtocolError(t *testing.T) {
+	server, err := New(ServerInfo{Name: testServerName, Version: "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RegisterTool(server, "panic", "", func(context.Context, *testInput) (*testOutput, error) {
+		panic("boom")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response, err := server.ServeJSON(t.Context(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"panic","arguments":{}}}`), RequestMeta{})
+	if err != nil || !strings.Contains(string(response), `"code":-32603`) {
+		t.Fatalf("response=%s err=%v", response, err)
+	}
+}
+
 func TestUnitMiddlewareAuthorization(t *testing.T) {
-	server, err := New(ServerInfo{Name: "test", Version: "1"}, WithMiddleware(func(next Handler) Handler {
+	server, err := New(ServerInfo{Name: testServerName, Version: "1"}, WithMiddleware(func(next Handler) Handler {
 		return func(ctx context.Context, request Request) (any, error) {
 			if request.Meta.Headers["Authorization"] == "" {
 				return nil, ErrUnauthorized
@@ -86,7 +106,7 @@ func TestUnitMiddlewareAuthorization(t *testing.T) {
 
 func TestUnitRequestObserver(t *testing.T) {
 	observed := make(chan Request, 1)
-	server, err := New(ServerInfo{Name: "test", Version: "1"}, WithRequestObserver(func(_ context.Context, request Request, duration time.Duration) {
+	server, err := New(ServerInfo{Name: testServerName, Version: "1"}, WithRequestObserver(func(_ context.Context, request Request, duration time.Duration) {
 		if duration < 0 {
 			t.Fatal("negative duration")
 		}
@@ -99,13 +119,13 @@ func TestUnitRequestObserver(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := <-observed
-	if request.Method != "ping" {
+	if request.Method != pingMethod {
 		t.Fatalf("method = %q", request.Method)
 	}
 }
 
 func TestUnitResourcesAndPrompts(t *testing.T) {
-	server, _ := New(ServerInfo{Name: "test", Version: "1"})
+	server, _ := New(ServerInfo{Name: testServerName, Version: "1"})
 	if err := server.RegisterResource(Resource{URI: "memo://one", Name: "one", Text: "content"}); err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +144,7 @@ func TestUnitResourcesAndPrompts(t *testing.T) {
 }
 
 func TestUnitRejectsRegistrationAfterRequest(t *testing.T) {
-	server, _ := New(ServerInfo{Name: "test", Version: "1"})
+	server, _ := New(ServerInfo{Name: testServerName, Version: "1"})
 	_, _ = server.ServeJSON(t.Context(), []byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`), RequestMeta{})
 	err := server.RegisterResource(Resource{URI: "memo://one", Name: "one", Text: "content"})
 	if !errors.Is(err, ErrStarted) {
@@ -133,7 +153,7 @@ func TestUnitRejectsRegistrationAfterRequest(t *testing.T) {
 }
 
 func TestUnitRegisterToolRejectsRecursiveInput(t *testing.T) {
-	server, err := New(ServerInfo{Name: "test", Version: "1"})
+	server, err := New(ServerInfo{Name: testServerName, Version: "1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +167,7 @@ func TestUnitRegisterToolRejectsRecursiveInput(t *testing.T) {
 
 func TestUnitRegisterPromptCopiesSlices(t *testing.T) {
 	const changed = "changed"
-	server, err := New(ServerInfo{Name: "test", Version: "1"})
+	server, err := New(ServerInfo{Name: testServerName, Version: "1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +220,7 @@ func TestUnitRegisterPromptCopiesSlices(t *testing.T) {
 }
 
 func TestUnitRejectsInvalidJSONRPCIDAndParams(t *testing.T) {
-	server, err := New(ServerInfo{Name: "test", Version: "1"})
+	server, err := New(ServerInfo{Name: testServerName, Version: "1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,6 +245,76 @@ func TestUnitResourceTemplateDecodesSafeVariable(t *testing.T) {
 	}
 }
 
+func TestUnitTaskAugmentationAndPolling(t *testing.T) {
+	server, err := New(ServerInfo{Name: testServerName, Version: "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RegisterTool(server, "task", "", func(_ context.Context, input *testInput) (*testOutput, error) {
+		return &testOutput{Greeting: input.Name}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response, err := server.ServeJSON(t.Context(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"task","task":{"ttl":1000},"arguments":{"name":"done"}}}`), RequestMeta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Result struct {
+			Task Task `json:"task"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(response, &envelope); err != nil || envelope.Result.Task.TaskID == "" {
+		t.Fatalf("response=%s err=%v", response, err)
+	}
+	result, err := server.GetTaskResult(t.Context(), envelope.Result.Task.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(mustJSON(t, result)), "done") {
+		t.Fatalf("result=%v", result)
+	}
+	polled, err := server.ServeJSON(t.Context(), []byte(`{"jsonrpc":"2.0","id":2,"method":"tasks/result","params":{"taskId":"`+envelope.Result.Task.TaskID+`"}}`), RequestMeta{})
+	if err != nil || strings.Contains(string(polled), `"error"`) {
+		t.Fatalf("polled=%s err=%v", polled, err)
+	}
+}
+
+func TestUnitRequestClientFeatureHelpers(t *testing.T) {
+	server, err := New(ServerInfo{Name: testServerName, Version: "1"}, WithMiddleware(func(next Handler) Handler {
+		return func(ctx context.Context, request Request) (any, error) {
+			if request.Method == pingMethod {
+				roots, err := request.ListRoots(ctx)
+				if err != nil || len(roots.Roots) != 1 {
+					return nil, err
+				}
+			}
+			return next(ctx, request)
+		}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := server.ServeJSON(t.Context(), []byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`), RequestMeta{Call: func(_ context.Context, method string, _ any) (json.RawMessage, error) {
+		if method != "roots/list" {
+			t.Fatalf("method=%s", method)
+		}
+		return json.RawMessage(`{"roots":[{"uri":"file:///tmp"}]}`), nil
+	}})
+	if err != nil || !strings.Contains(string(response), `"result"`) {
+		t.Fatalf("response=%s err=%v", response, err)
+	}
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
 type testTransport func(context.Context, *Server) error
 
 func (transport testTransport) Serve(ctx context.Context, server *Server) error {
@@ -232,7 +322,7 @@ func (transport testTransport) Serve(ctx context.Context, server *Server) error 
 }
 
 func TestUnitRunCancelsTransports(t *testing.T) {
-	server, _ := New(ServerInfo{Name: "test", Version: "1"})
+	server, _ := New(ServerInfo{Name: testServerName, Version: "1"})
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
 	defer cancel()
 	err := server.RunContext(ctx, testTransport(func(ctx context.Context, _ *Server) error { <-ctx.Done(); return ctx.Err() }))
@@ -242,7 +332,7 @@ func TestUnitRunCancelsTransports(t *testing.T) {
 }
 
 func TestUnitRunWaitsForTransportShutdownAfterFailure(t *testing.T) {
-	server, _ := New(ServerInfo{Name: "test", Version: "1"})
+	server, _ := New(ServerInfo{Name: testServerName, Version: "1"})
 	started := make(chan struct{})
 	stopped := make(chan struct{})
 	wantErr := errors.New("transport failed")
