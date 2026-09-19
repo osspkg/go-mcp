@@ -10,6 +10,9 @@ go run ./example/sse
 go run ./example/middleware
 go run ./example/config-env
 go run ./example/config-yaml -- example/config-yaml/server.yaml
+go run ./example/features
+go run ./example/tasks
+go run ./example/discovery
 ```
 
 ## Examples
@@ -20,9 +23,13 @@ go run ./example/config-yaml -- example/config-yaml/server.yaml
 - `middleware` — `Authorization` header validation.
 - `config-env` — configuration from `MCP_*` environment variables.
 - `config-yaml` — configuration from a flat YAML file.
+- `features` — capabilities, tool annotations, icons, output schema, progress, logging, roots, sampling, and elicitation.
+- `tasks` — task-augmented tool execution with cancellation and polling.
+- `discovery` — OAuth protected-resource and authorization-server metadata.
 
-All servers run through `server.Run(transports...)`. The library automatically
-handles shutdown on `os.Interrupt` or `SIGTERM`.
+All MCP servers run through `server.Run(transports...)`. The library
+automatically handles shutdown on `os.Interrupt` or `SIGTERM`. The standalone
+`discovery` example serves only OAuth/OIDC metadata with `net/http`.
 
 The HTTP transport also carries server notifications and correlated
 server-initiated requests (sampling, roots, and elicitation) over the session
