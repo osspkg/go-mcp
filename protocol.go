@@ -46,6 +46,9 @@ func (err protocolError) Error() string { return err.message }
 
 // ServeJSON processes one JSON-RPC request. A nil response represents a JSON-RPC notification.
 func (server *Server) ServeJSON(ctx context.Context, payload []byte, meta RequestMeta) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	server.seal()
 	var request rpcRequest
 	if err := json.Unmarshal(payload, &request); err != nil {
@@ -63,7 +66,13 @@ func (server *Server) ServeJSON(ctx context.Context, payload []byte, meta Reques
 	observed := Request{Method: request.Method, Params: request.Params, Meta: meta}
 	started := time.Now()
 	defer func() { server.observe(ctx, observed, time.Since(started)) }()
-	result, err := handler(ctx, observed)
+	requestCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if len(request.ID) > 0 {
+		server.trackRequest(request.ID, cancel)
+		defer server.untrackRequest(request.ID)
+	}
+	result, err := handler(requestCtx, observed)
 	if len(request.ID) == 0 {
 		return nil, nil
 	}
@@ -88,6 +97,18 @@ func (server *Server) observe(ctx context.Context, request Request, duration tim
 	for _, observer := range observers {
 		observer(ctx, request, duration)
 	}
+}
+
+func (server *Server) trackRequest(id json.RawMessage, cancel context.CancelFunc) {
+	server.mu.Lock()
+	server.active[string(id)] = cancel
+	server.mu.Unlock()
+}
+
+func (server *Server) untrackRequest(id json.RawMessage) {
+	server.mu.Lock()
+	delete(server.active, string(id))
+	server.mu.Unlock()
 }
 
 func validRequestID(id json.RawMessage) bool {
@@ -146,6 +167,8 @@ func (server *Server) dispatch(ctx context.Context, request Request) (any, error
 		return server.initialize(), nil
 	case "ping":
 		return map[string]any{}, nil
+	case "$/cancelRequest":
+		return nil, server.cancelRequest(request.Params)
 	case "tools/list":
 		return server.listTools(), nil
 	case "tools/call":
@@ -165,15 +188,40 @@ func (server *Server) dispatch(ctx context.Context, request Request) (any, error
 	}
 }
 
+func (server *Server) cancelRequest(params json.RawMessage) error {
+	var input struct {
+		ID json.RawMessage `json:"requestId"`
+	}
+	if err := json.Unmarshal(params, &input); err != nil || !validRequestID(input.ID) || len(input.ID) == 0 {
+		return protocolError{code: -32602, message: "invalid cancellation parameters"}
+	}
+	server.mu.RLock()
+	cancel := server.active[string(input.ID)]
+	server.mu.RUnlock()
+	if cancel != nil {
+		cancel()
+	}
+	return nil
+}
+
 func (server *Server) initialize() map[string]any {
-	capabilities := map[string]any{"tools": map[string]any{}, "resources": map[string]any{}, "prompts": map[string]any{}}
+	capabilities := mapsClone(server.capabilities)
+	if capabilities == nil {
+		capabilities = map[string]any{}
+	}
 	result := map[string]any{
 		"protocolVersion": "2025-11-25",
 		"capabilities":    capabilities,
-		"serverInfo":      map[string]string{"name": server.info.Name, "version": server.info.Version},
+		"serverInfo":      map[string]any{"name": server.info.Name, "version": server.info.Version},
 	}
 	if server.info.Instructions != "" {
 		result["instructions"] = server.info.Instructions
+	}
+	if server.info.Description != "" {
+		result["serverInfo"].(map[string]any)["description"] = server.info.Description
+	}
+	if len(server.info.Icons) > 0 {
+		result["serverInfo"].(map[string]any)["icons"] = server.info.Icons
 	}
 	return result
 }
@@ -222,7 +270,7 @@ func (server *Server) listResources() map[string]any {
 	items := make([]any, 0, len(server.resources))
 	for _, uri := range sortedKeys(server.resources) {
 		item := server.resources[uri]
-		items = append(items, map[string]any{"uri": item.URI, "name": item.Name, "description": item.Description, "mimeType": item.MIMEType})
+		items = append(items, map[string]any{"uri": item.URI, "name": item.Name, "description": item.Description, "mimeType": item.MIMEType, "icons": item.Icons})
 	}
 	return map[string]any{"resources": items}
 }
@@ -232,7 +280,7 @@ func (server *Server) listTemplates() map[string]any {
 	defer server.mu.RUnlock()
 	items := make([]any, 0, len(server.templates))
 	for _, item := range server.templates {
-		items = append(items, map[string]any{"uriTemplate": item.URITemplate, "name": item.Name, "description": item.Description, "mimeType": item.MIMEType})
+		items = append(items, map[string]any{"uriTemplate": item.URITemplate, "name": item.Name, "description": item.Description, "mimeType": item.MIMEType, "icons": item.Icons})
 	}
 	return map[string]any{"resourceTemplates": items}
 }
@@ -299,7 +347,7 @@ func (server *Server) listPrompts() map[string]any {
 	items := make([]any, 0, len(server.prompts))
 	for _, name := range sortedKeys(server.prompts) {
 		item := server.prompts[name]
-		items = append(items, map[string]any{"name": item.Name, "description": item.Description, "arguments": item.Arguments})
+		items = append(items, map[string]any{"name": item.Name, "description": item.Description, "arguments": item.Arguments, "icons": item.Icons})
 	}
 	return map[string]any{"prompts": items}
 }

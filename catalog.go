@@ -19,6 +19,7 @@ type Resource struct {
 	Description string `json:"description,omitempty"`
 	MIMEType    string `json:"mimeType,omitempty"`
 	Text        string `json:"text,omitempty"`
+	Icons       []Icon `json:"icons,omitempty"`
 }
 
 // ResourceRequest identifies a dynamic resource request.
@@ -37,6 +38,7 @@ type ResourceTemplate struct {
 	Description string          `json:"description,omitempty"`
 	MIMEType    string          `json:"mimeType,omitempty"`
 	Handler     ResourceHandler `json:"-"`
+	Icons       []Icon          `json:"icons,omitempty"`
 }
 
 // RegisterResource registers a static resource.
@@ -52,6 +54,7 @@ func (server *Server) RegisterResource(resource Resource) error {
 	if _, exists := server.resources[resource.URI]; exists {
 		return fmt.Errorf("mcp: duplicate resource %q", resource.URI)
 	}
+	resource.Icons = append([]Icon(nil), resource.Icons...)
 	server.resources[resource.URI] = resource
 	return nil
 }
@@ -74,6 +77,7 @@ func (server *Server) RegisterResourceTemplate(template ResourceTemplate) error 
 			return fmt.Errorf("mcp: duplicate resource template %q", template.URITemplate)
 		}
 	}
+	template.Icons = append([]Icon(nil), template.Icons...)
 	server.templates = append(server.templates, template)
 	return nil
 }
@@ -115,6 +119,7 @@ type Prompt struct {
 	Arguments   []PromptArgument `json:"arguments,omitempty"`
 	Messages    []PromptMessage  `json:"-"`
 	Handler     PromptHandler    `json:"-"`
+	Icons       []Icon           `json:"icons,omitempty"`
 }
 
 // PromptHandler produces messages from string arguments.
@@ -138,6 +143,7 @@ func (server *Server) RegisterPrompt(prompt Prompt) error {
 	}
 	prompt.Arguments = append([]PromptArgument(nil), prompt.Arguments...)
 	prompt.Messages = append([]PromptMessage(nil), prompt.Messages...)
+	prompt.Icons = append([]Icon(nil), prompt.Icons...)
 	server.prompts[prompt.Name] = prompt
 	return nil
 }

@@ -16,6 +16,7 @@ import (
 	"io"
 	"mime"
 	stdhttp "net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -36,14 +37,15 @@ const (
 
 // Config configures a Streamable HTTP handler.
 type Config struct {
-	Address      string
-	Path         string
-	MaxBodyBytes int64
-	SessionTTL   time.Duration
-	MaxSessions  int
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
-	IdleTimeout  time.Duration
+	Address        string
+	Path           string
+	MaxBodyBytes   int64
+	SessionTTL     time.Duration
+	MaxSessions    int
+	ReadTimeout    time.Duration
+	WriteTimeout   time.Duration
+	IdleTimeout    time.Duration
+	AllowedOrigins []string
 }
 
 // DefaultConfig returns transport defaults.
@@ -153,6 +155,7 @@ func NewHandler(server *mcp.Server, config Config) (*Handler, error) {
 	if config.MaxSessions <= 0 {
 		config.MaxSessions = defaultMaxSessions
 	}
+	config.AllowedOrigins = slices.Clone(config.AllowedOrigins)
 	return &Handler{server: server, config: config, sessions: map[string]time.Time{}}, nil
 }
 
@@ -165,6 +168,10 @@ func (handler *Handler) ServeHTTP(writer stdhttp.ResponseWriter, request *stdhtt
 	if request.Method != stdhttp.MethodPost {
 		writer.Header().Set("Allow", stdhttp.MethodPost)
 		stdhttp.Error(writer, "method not allowed", stdhttp.StatusMethodNotAllowed)
+		return
+	}
+	if origin := request.Header.Get("Origin"); origin != "" && !slices.Contains(handler.config.AllowedOrigins, origin) {
+		stdhttp.Error(writer, "forbidden origin", stdhttp.StatusForbidden)
 		return
 	}
 	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))

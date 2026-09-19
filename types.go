@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -32,7 +33,17 @@ var (
 type ServerInfo struct {
 	Name         string
 	Version      string
+	Description  string
 	Instructions string
+	Icons        []Icon
+}
+
+// Icon describes an icon advertised by an MCP implementation or capability.
+type Icon struct {
+	Src      string `json:"src"`
+	MIMEType string `json:"mimeType,omitempty"`
+	Theme    string `json:"theme,omitempty"`
+	Size     string `json:"size,omitempty"`
 }
 
 // RequestMeta is transport-provided request information available to middleware.
@@ -40,13 +51,37 @@ type RequestMeta struct {
 	Transport string
 	Headers   map[string]string
 	SessionID string
+	Notify    NotificationSender
+	Call      ClientCaller
 }
+
+// NotificationSender sends a JSON-RPC notification on the active connection.
+type NotificationSender func(context.Context, string, any) error
+
+// ClientCaller sends a server-initiated JSON-RPC request to the connected client.
+type ClientCaller func(context.Context, string, any) (json.RawMessage, error)
 
 // Request is the parsed JSON-RPC request passed through middleware.
 type Request struct {
 	Method string
 	Params json.RawMessage
 	Meta   RequestMeta
+}
+
+// SendNotification sends a notification when the transport supports it.
+func (request Request) SendNotification(ctx context.Context, method string, params any) error {
+	if request.Meta.Notify == nil {
+		return errors.New("mcp: client notifications are unavailable")
+	}
+	return request.Meta.Notify(ctx, method, params)
+}
+
+// CallClient sends a request to the connected MCP client.
+func (request Request) CallClient(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	if request.Meta.Call == nil {
+		return nil, errors.New("mcp: client requests are unavailable")
+	}
+	return request.Meta.Call(ctx, method, params)
 }
 
 // Handler processes one MCP request.
@@ -61,6 +96,14 @@ type RequestObserver func(context.Context, Request, time.Duration)
 
 // Option configures a Server.
 type Option func(*Server) error
+
+// WithCapabilities sets additional server capability metadata advertised during initialize.
+func WithCapabilities(capabilities map[string]any) Option {
+	return func(server *Server) error {
+		server.capabilities = mapsClone(capabilities)
+		return nil
+	}
+}
 
 // WithMiddleware appends middleware to the request chain. Middleware run in
 // the order in which options are supplied.
@@ -94,14 +137,27 @@ func WithRequestObserver(observers ...RequestObserver) Option {
 type Server struct {
 	info ServerInfo
 
-	mu         sync.RWMutex
-	started    bool
-	middleware []Middleware
-	observers  []RequestObserver
-	tools      map[string]tool
-	resources  map[string]Resource
-	templates  []ResourceTemplate
-	prompts    map[string]Prompt
+	mu           sync.RWMutex
+	started      bool
+	middleware   []Middleware
+	observers    []RequestObserver
+	tools        map[string]tool
+	resources    map[string]Resource
+	templates    []ResourceTemplate
+	prompts      map[string]Prompt
+	active       map[string]context.CancelFunc
+	capabilities map[string]any
+}
+
+func mapsClone(input map[string]any) map[string]any {
+	if input == nil {
+		return nil
+	}
+	output := make(map[string]any, len(input))
+	for key, value := range input {
+		output[key] = value
+	}
+	return output
 }
 
 // New creates a Server identified by info.
@@ -117,7 +173,9 @@ func New(info ServerInfo, options ...Option) (*Server, error) {
 		tools:     map[string]tool{},
 		resources: map[string]Resource{},
 		prompts:   map[string]Prompt{},
+		active:    map[string]context.CancelFunc{},
 	}
+	server.info.Icons = slices.Clone(info.Icons)
 	for _, option := range options {
 		if option == nil {
 			return nil, errors.New("mcp: nil option")
@@ -242,7 +300,7 @@ func schemaForStruct(value reflect.Type, visiting map[reflect.Type]bool) (map[st
 			required = append(required, name)
 		}
 	}
-	schema := map[string]any{"type": "object", "properties": properties, "additionalProperties": false}
+	schema := map[string]any{"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "properties": properties, "additionalProperties": false}
 	if len(required) > 0 {
 		schema["required"] = required
 	}

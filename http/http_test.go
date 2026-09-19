@@ -57,3 +57,22 @@ func TestUnitServerAcceptsNilContext(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestUnitRejectsInvalidOrigin(t *testing.T) {
+	server, err := mcp.New(mcp.ServerInfo{Name: "test", Version: "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewHandler(server, Config{AllowedOrigins: []string{"https://allowed.example"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", "https://evil.example")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("got status %d", response.Code)
+	}
+}
