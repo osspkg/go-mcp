@@ -59,6 +59,22 @@ func TestStdioTransport_StartHonorsSmallMaxMessageBytes(t *testing.T) {
 	}
 }
 
+func TestStdioTransport_SendAppendsNewline(t *testing.T) {
+	output := &strings.Builder{}
+	transport, err := NewStdioTransport(strings.NewReader(""), output, StdioConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport.cancel = func() {}
+
+	if _, err := transport.Send(context.Background(), []byte(`{"jsonrpc":"2.0"}`)); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+	if got, want := output.String(), "{\"jsonrpc\":\"2.0\"}\n"; got != want {
+		t.Errorf("Send() output = %q, want %q", got, want)
+	}
+}
+
 func TestNewCommandTransport_RejectsUnsafeMaxMessageBytes(t *testing.T) {
 	_, err := NewCommandTransport("server", nil, CommandConfig{StdioConfig: StdioConfig{MaxMessageBytes: maxStdioMessageBytes + 1}})
 	if err == nil {
