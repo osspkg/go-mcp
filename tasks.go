@@ -60,6 +60,7 @@ type Task struct {
 
 type taskRecord struct {
 	mu     sync.Mutex
+	owner  string
 	task   Task
 	result any
 	err    error
@@ -116,7 +117,7 @@ func (server *Server) startTask(ctx context.Context, ttl time.Duration, work fun
 			_ = server.NotifyTaskStatus(context.WithoutCancel(taskCtx), sessionID, task)
 		}
 	}
-	record := &taskRecord{task: Task{TaskID: id, Status: TaskStatusWorking, CreatedAt: now, LastUpdatedAt: now, PollInterval: defaultTaskPollInterval, TTL: ttl.Milliseconds()}, cancel: cancel, done: make(chan struct{}), notify: notify}
+	record := &taskRecord{owner: taskOwner(ctx), task: Task{TaskID: id, Status: TaskStatusWorking, CreatedAt: now, LastUpdatedAt: now, PollInterval: defaultTaskPollInterval, TTL: ttl.Milliseconds()}, cancel: cancel, done: make(chan struct{}), notify: notify}
 	if err := server.storeTask(id, record); err != nil {
 		cancel()
 		return Task{}, err
@@ -203,9 +204,36 @@ func (server *Server) task(id string) (*taskRecord, error) {
 	return record, nil
 }
 
-// GetTask returns the current state of a task.
-func (server *Server) GetTask(_ context.Context, id string) (Task, error) {
+func taskOwner(ctx context.Context) string {
+	request, ok := RequestFromContext(ctx)
+	if !ok {
+		return ""
+	}
+	return request.Meta.SessionID
+}
+
+func (server *Server) taskForOwner(owner, id string) (Task, error) {
 	record, err := server.task(id)
+	if err != nil || record.owner != owner {
+		return Task{}, ErrTaskNotFound
+	}
+	return record.snapshot(), nil
+}
+
+func (server *Server) taskForContext(ctx context.Context, id string) (*taskRecord, error) {
+	record, err := server.task(id)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := RequestFromContext(ctx); ok && record.owner != taskOwner(ctx) {
+		return nil, ErrTaskNotFound
+	}
+	return record, nil
+}
+
+// GetTask returns the current state of a task.
+func (server *Server) GetTask(ctx context.Context, id string) (Task, error) {
+	record, err := server.taskForContext(ctx, id)
 	if err != nil {
 		return Task{}, err
 	}
@@ -218,7 +246,7 @@ func (server *Server) GetTaskResult(ctx context.Context, id string) (any, error)
 	if ctx == nil {
 		ctx = context.Background() //nolint:contextcheck // a nil caller context has no parent
 	}
-	record, err := server.task(id)
+	record, err := server.taskForContext(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -236,10 +264,26 @@ func (server *Server) GetTaskResult(ctx context.Context, id string) (any, error)
 }
 
 // CancelTask requests cancellation and returns the resulting task state.
-func (server *Server) CancelTask(_ context.Context, id string) (Task, error) {
-	record, err := server.task(id)
+func (server *Server) CancelTask(ctx context.Context, id string) (Task, error) {
+	record, err := server.taskForContext(ctx, id)
 	if err != nil {
 		return Task{}, err
+	}
+	record.mu.Lock()
+	if record.task.Status == TaskStatusWorking || record.task.Status == TaskStatusInput {
+		record.task.Status = TaskStatusCancelled
+		record.task.StatusMessage = "task cancellation requested"
+		record.task.LastUpdatedAt = time.Now().UTC()
+	}
+	record.mu.Unlock()
+	record.cancel()
+	return record.snapshot(), nil
+}
+
+func (server *Server) cancelTaskForOwner(owner, id string) (Task, error) {
+	record, err := server.task(id)
+	if err != nil || record.owner != owner {
+		return Task{}, ErrTaskNotFound
 	}
 	record.mu.Lock()
 	if record.task.Status == TaskStatusWorking || record.task.Status == TaskStatusInput {
@@ -267,10 +311,10 @@ func (server *Server) cleanupTasksLocked(now time.Time) {
 	}
 }
 
-func (server *Server) taskResult(id string) (any, error) {
+func (server *Server) taskResultForOwner(owner, id string) (any, error) {
 	record, err := server.task(id)
-	if err != nil {
-		return nil, err
+	if err != nil || record.owner != owner {
+		return nil, ErrTaskNotFound
 	}
 	select {
 	case <-record.done:

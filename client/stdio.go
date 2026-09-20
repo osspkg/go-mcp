@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 )
@@ -16,10 +17,13 @@ import (
 const (
 	defaultMaxMessageBytes = 1 << 20
 	stdioScannerBuffer     = 64 * 1024
+	maxStdioMessageBytes   = int(^uint(0)>>1) / 2
 )
 
 // StdioConfig configures the newline-delimited JSON-RPC client transport.
 type StdioConfig struct {
+	// MaxMessageBytes limits an inbound JSON-RPC line. Non-positive values use
+	// the default; values that could overflow Scanner buffer growth are rejected.
 	MaxMessageBytes int
 }
 
@@ -45,10 +49,22 @@ func NewStdioTransport(input io.Reader, output io.Writer, config StdioConfig) (*
 	if input == nil || output == nil {
 		return nil, errors.New("mcp/client: stdio input and output are required")
 	}
-	if config.MaxMessageBytes <= 0 {
-		config.MaxMessageBytes = defaultMaxMessageBytes
+	maxMessageBytes, err := normalizeStdioMaxMessageBytes(config.MaxMessageBytes)
+	if err != nil {
+		return nil, err
 	}
+	config.MaxMessageBytes = maxMessageBytes
 	return &StdioTransport{input: input, output: output, config: config, ready: make(chan struct{})}, nil
+}
+
+func normalizeStdioMaxMessageBytes(limit int) (int, error) {
+	if limit <= 0 {
+		return defaultMaxMessageBytes, nil
+	}
+	if limit > maxStdioMessageBytes {
+		return 0, fmt.Errorf("mcp/client: stdio max message bytes exceeds safe scanner limit of %d", maxStdioMessageBytes)
+	}
+	return limit, nil
 }
 
 // Ready returns a channel closed when Start has installed the stdio reader.
@@ -83,7 +99,8 @@ func (transport *StdioTransport) Start(ctx context.Context, receiver Receiver) e
 	defer cancel()
 
 	scanner := bufio.NewScanner(transport.input)
-	buffer := make([]byte, stdioScannerBuffer)
+	bufferSize := min(stdioScannerBuffer, transport.config.MaxMessageBytes)
+	buffer := make([]byte, bufferSize)
 	scanner.Buffer(buffer, transport.config.MaxMessageBytes)
 	for scanner.Scan() {
 		select {

@@ -481,6 +481,8 @@ annotations и outputSchema. Если outputSchema не задан явно, о�
 typed handler через `RequestFromContext(ctx)`. Методы `tasks/get`,
 `tasks/result` и `tasks/cancel` поддерживают experimental durable tasks:
 добавьте `"task":{"ttl":60000}` к `tools/call`, а затем опрашивайте handle.
+Задачи, созданные через MCP, изолированы сессией создателя: другая сессия не
+может получить их список, статус, результат или отменить их по ID.
 
 ## 5. Typed tools и JSON Schema
 
@@ -862,6 +864,8 @@ legacy-транспорта —
 `NewSSETransport("http://host/sse", SSEConfig{})`. Typed helpers включают
 `ListResources`, `ReadResource`, `ListPrompts`, `GetPrompt`, `CallTool` и
 операции Tasks. Для новых или прикладных методов остаётся `CallRaw`.
+`StdioConfig.MaxMessageBytes` по умолчанию равен 1 МиБ; значения больше
+наибольшего безопасного размера Scanner для текущей платформы отклоняются.
 Ошибки создания и запуска команды `Client.Start` возвращает синхронно.
 Дочерний процесс получает заданные рабочий каталог и окружение, пишет
 диагностику в `CommandConfig.Stderr` и завершается при отмене контекста клиента
