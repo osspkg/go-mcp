@@ -143,9 +143,8 @@ func (transport *StdioTransport) Send(ctx context.Context, payload []byte) ([]by
 	if transport.cancel == nil {
 		return nil, ErrNotStarted
 	}
-	line := make([]byte, len(payload)+1)
-	copy(line, payload)
-	line[len(payload)] = '\n'
+	line := append([]byte(nil), payload...)
+	line = append(line, '\n')
 	if _, err := transport.output.Write(line); err != nil {
 		return nil, err
 	}
