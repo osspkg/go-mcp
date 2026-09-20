@@ -186,7 +186,7 @@ type Server struct {
 	resources     map[string]Resource
 	templates     []ResourceTemplate
 	prompts       map[string]Prompt
-	active        map[string]context.CancelFunc
+	active        map[activeRequestKey]*activeRequest
 	capabilities  map[string]any
 	peers         map[string]peer
 	tasks         map[string]*taskRecord
@@ -258,7 +258,7 @@ func New(info ServerInfo, options ...Option) (*Server, error) {
 		tools:         map[string]tool{},
 		resources:     map[string]Resource{},
 		prompts:       map[string]Prompt{},
-		active:        map[string]context.CancelFunc{},
+		active:        map[activeRequestKey]*activeRequest{},
 		peers:         map[string]peer{},
 		tasks:         map[string]*taskRecord{},
 		subscriptions: map[string]map[string]struct{}{},

@@ -500,6 +500,8 @@ if request, ok := mcp.RequestFromContext(ctx); ok {
 `tasks/get`, `tasks/result`, and `tasks/cancel` implement the experimental
 durable task flow. Add `"task":{"ttl":60000}` to a `tools/call` request to
 receive a task handle immediately, then poll its status and result.
+Tasks created through MCP are scoped to the creating session: another session
+cannot list, inspect, retrieve results for, or cancel them by task ID.
 
 ## 5. Typed tools and JSON Schema
 
@@ -880,6 +882,8 @@ Use `NewCommandTransport("./my-mcp-server", args, CommandConfig{})` to launch a
 child process, `NewStdioTransport(input, output, StdioConfig{})` to connect to
 already-open streams, and `NewSSETransport("http://host/sse", SSEConfig{})`
 for the legacy transport.
+`StdioConfig.MaxMessageBytes` defaults to 1 MiB; values above the largest
+safe Scanner size for the current platform are rejected.
 `Client.Start` returns command creation/startup errors synchronously; the
 child inherits the configured working directory and environment, writes
 diagnostics to `CommandConfig.Stderr`, and is terminated by the client

@@ -79,8 +79,8 @@ func (server *Server) ServeJSON(ctx context.Context, payload []byte, meta Reques
 	defer cancel()
 	requestCtx = context.WithValue(requestCtx, requestContextKey{}, observed)
 	if len(request.ID) > 0 {
-		server.trackRequest(request.ID, cancel)
-		defer server.untrackRequest(request.ID)
+		key, active := server.trackRequest(meta.SessionID, request.ID, cancel)
+		defer server.untrackRequest(key, active)
 	}
 	result, err := invokeHandler(requestCtx, handler, observed)
 	if len(request.ID) == 0 {
@@ -125,15 +125,27 @@ func (server *Server) observe(ctx context.Context, request Request, duration tim
 	}
 }
 
-func (server *Server) trackRequest(id json.RawMessage, cancel context.CancelFunc) {
-	server.mu.Lock()
-	server.active[string(id)] = cancel
-	server.mu.Unlock()
+type activeRequestKey struct {
+	sessionID string
+	id        string
 }
 
-func (server *Server) untrackRequest(id json.RawMessage) {
+type activeRequest struct{ cancel context.CancelFunc }
+
+func (server *Server) trackRequest(sessionID string, id json.RawMessage, cancel context.CancelFunc) (activeRequestKey, *activeRequest) {
+	key := activeRequestKey{sessionID: sessionID, id: string(id)}
+	active := &activeRequest{cancel: cancel}
 	server.mu.Lock()
-	delete(server.active, string(id))
+	server.active[key] = active
+	server.mu.Unlock()
+	return key, active
+}
+
+func (server *Server) untrackRequest(key activeRequestKey, active *activeRequest) {
+	server.mu.Lock()
+	if server.active[key] == active {
+		delete(server.active, key)
+	}
 	server.mu.Unlock()
 }
 
@@ -194,9 +206,9 @@ func (server *Server) dispatch(ctx context.Context, request Request) (any, error
 	case "ping":
 		return map[string]any{}, nil
 	case "$/cancelRequest":
-		return nil, server.cancelRequest(request.Params)
+		return nil, server.cancelRequest(request)
 	case "notifications/cancelled":
-		return nil, server.cancelRequest(request.Params)
+		return nil, server.cancelRequest(request)
 	case "notifications/elicitation/complete":
 		return map[string]any{}, nil
 	case "logging/setLevel":
@@ -204,11 +216,11 @@ func (server *Server) dispatch(ctx context.Context, request Request) (any, error
 	case "tasks/get":
 		return server.getTask(ctx, request.Params)
 	case "tasks/result":
-		return server.getTaskResult(request.Params)
+		return server.getTaskResult(ctx, request.Params)
 	case "tasks/cancel":
 		return server.cancelTask(ctx, request.Params)
 	case "tasks/list":
-		return server.listTasks()
+		return server.listTasks(ctx)
 	case "tools/list":
 		return server.listTools(), nil
 	case "tools/call":
@@ -267,18 +279,18 @@ func (server *Server) unsubscribeResource(request Request) (any, error) {
 	return map[string]any{}, nil
 }
 
-func (server *Server) cancelRequest(params json.RawMessage) error {
+func (server *Server) cancelRequest(request Request) error {
 	var input struct {
 		ID json.RawMessage `json:"requestId"`
 	}
-	if err := json.Unmarshal(params, &input); err != nil || !validRequestID(input.ID) || len(input.ID) == 0 {
+	if err := json.Unmarshal(request.Params, &input); err != nil || !validRequestID(input.ID) || len(input.ID) == 0 {
 		return protocolError{code: -32602, message: "invalid cancellation parameters"}
 	}
 	server.mu.RLock()
-	cancel := server.active[string(input.ID)]
+	active := server.active[activeRequestKey{sessionID: request.Meta.SessionID, id: string(input.ID)}]
 	server.mu.RUnlock()
-	if cancel != nil {
-		cancel()
+	if active != nil {
+		active.cancel()
 	}
 	return nil
 }
@@ -418,21 +430,21 @@ func (server *Server) getTask(ctx context.Context, params json.RawMessage) (any,
 	if err := json.Unmarshal(params, &input); err != nil || input.TaskID == "" {
 		return nil, protocolError{code: -32602, message: "invalid task parameters"} //nolint:goconst // shared protocol error
 	}
-	task, err := server.GetTask(ctx, input.TaskID)
+	task, err := server.taskForOwner(taskOwner(ctx), input.TaskID)
 	if err != nil {
 		return nil, protocolError{code: -32004, message: "task not found"} //nolint:goconst // shared protocol error
 	}
 	return task, nil
 }
 
-func (server *Server) getTaskResult(params json.RawMessage) (any, error) {
+func (server *Server) getTaskResult(ctx context.Context, params json.RawMessage) (any, error) {
 	var input struct {
 		TaskID string `json:"taskId"`
 	}
 	if err := json.Unmarshal(params, &input); err != nil || input.TaskID == "" {
 		return nil, protocolError{code: -32602, message: "invalid task parameters"}
 	}
-	result, err := server.taskResult(input.TaskID)
+	result, err := server.taskResultForOwner(taskOwner(ctx), input.TaskID)
 	if err != nil {
 		if errors.Is(err, ErrTaskNotReady) {
 			return nil, protocolError{code: -32005, message: "task result is not ready"}
@@ -452,19 +464,21 @@ func (server *Server) cancelTask(ctx context.Context, params json.RawMessage) (a
 	if err := json.Unmarshal(params, &input); err != nil || input.TaskID == "" {
 		return nil, protocolError{code: -32602, message: "invalid task parameters"}
 	}
-	task, err := server.CancelTask(ctx, input.TaskID)
+	task, err := server.cancelTaskForOwner(taskOwner(ctx), input.TaskID)
 	if err != nil {
 		return nil, protocolError{code: -32004, message: "task not found"}
 	}
 	return task, nil
 }
 
-func (server *Server) listTasks() (any, error) {
+func (server *Server) listTasks(ctx context.Context) (any, error) {
 	server.mu.Lock()
 	server.cleanupTasksLocked(time.Now())
 	items := make([]Task, 0, len(server.tasks))
 	for _, record := range server.tasks {
-		items = append(items, record.snapshot())
+		if record.owner == taskOwner(ctx) {
+			items = append(items, record.snapshot())
+		}
 	}
 	server.mu.Unlock()
 	sort.Slice(items, func(left, right int) bool { return items[left].TaskID < items[right].TaskID })

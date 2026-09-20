@@ -54,9 +54,11 @@ func NewCommandTransport(command string, args []string, config CommandConfig) (*
 	if command == "" {
 		return nil, errors.New("mcp/client: command is required")
 	}
-	if config.MaxMessageBytes <= 0 {
-		config.MaxMessageBytes = defaultMaxMessageBytes
+	maxMessageBytes, err := normalizeStdioMaxMessageBytes(config.MaxMessageBytes)
+	if err != nil {
+		return nil, err
 	}
+	config.MaxMessageBytes = maxMessageBytes
 	if config.Stderr == nil {
 		config.Stderr = os.Stderr
 	}

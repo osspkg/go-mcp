@@ -270,6 +270,71 @@ func TestUnitTaskAugmentationAndPolling(t *testing.T) {
 	}
 }
 
+func TestUnitTasksAreScopedToTheirSession(t *testing.T) {
+	server, err := New(ServerInfo{Name: testServerName, Version: "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RegisterTool(server, "task", "", func(_ context.Context, input *testInput) (*testOutput, error) {
+		return &testOutput{Greeting: input.Name}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	owner := RequestMeta{SessionID: "owner"}
+	response, err := server.ServeJSON(t.Context(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"task","task":{"ttl":1000},"arguments":{"name":"private"}}}`), owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Result struct {
+			Task Task `json:"task"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(response, &envelope); err != nil || envelope.Result.Task.TaskID == "" {
+		t.Fatalf("response=%s err=%v", response, err)
+	}
+	if _, err := server.GetTaskResult(t.Context(), envelope.Result.Task.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	other := RequestMeta{SessionID: "other"}
+	for _, payload := range []string{
+		`{"jsonrpc":"2.0","id":2,"method":"tasks/get","params":{"taskId":"` + envelope.Result.Task.TaskID + `"}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tasks/result","params":{"taskId":"` + envelope.Result.Task.TaskID + `"}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"tasks/cancel","params":{"taskId":"` + envelope.Result.Task.TaskID + `"}}`,
+	} {
+		response, err := server.ServeJSON(t.Context(), []byte(payload), other)
+		if err != nil || !strings.Contains(string(response), `"code":-32004`) {
+			t.Fatalf("payload=%s response=%s err=%v", payload, response, err)
+		}
+	}
+	response, err = server.ServeJSON(t.Context(), []byte(`{"jsonrpc":"2.0","id":5,"method":"tasks/list"}`), other)
+	if err != nil || !strings.Contains(string(response), `"tasks":[]`) {
+		t.Fatalf("response=%s err=%v", response, err)
+	}
+}
+
+func TestUnitCancelRequestIsScopedToItsSession(t *testing.T) {
+	server, err := New(ServerInfo{Name: testServerName, Version: "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerCtx, ownerCancel := context.WithCancel(t.Context())
+	key, active := server.trackRequest("owner", json.RawMessage(`"shared"`), ownerCancel)
+	defer server.untrackRequest(key, active)
+	if err := server.cancelRequest(Request{Meta: RequestMeta{SessionID: "other"}, Params: json.RawMessage(`{"requestId":"shared"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ownerCtx.Err(); err != nil {
+		t.Fatalf("other session cancelled owner request: %v", err)
+	}
+	if err := server.cancelRequest(Request{Meta: RequestMeta{SessionID: "owner"}, Params: json.RawMessage(`{"requestId":"shared"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(ownerCtx.Err(), context.Canceled) {
+		t.Fatalf("owner request was not cancelled: %v", ownerCtx.Err())
+	}
+}
+
 func TestUnitRequestClientFeatureHelpers(t *testing.T) {
 	server, err := New(ServerInfo{Name: testServerName, Version: "1"}, WithMiddleware(func(next Handler) Handler {
 		return func(ctx context.Context, request Request) (any, error) {

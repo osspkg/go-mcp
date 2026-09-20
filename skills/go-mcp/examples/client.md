@@ -20,5 +20,7 @@ return err
 
 Use `NewCommandTransport` to launch a child process, `NewStdioTransport` for
 already-open streams, or `NewSSETransport` for a legacy `/sse` endpoint.
+`StdioConfig.MaxMessageBytes` defaults to 1 MiB and rejects values above the
+largest safe Scanner size for the current platform.
 `OnRequest` handles server-initiated requests and
 `OnNotification` handles progress, logging, and list-changed notifications.
