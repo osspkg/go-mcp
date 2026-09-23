@@ -1,10 +1,17 @@
-# go-mcp project instructions
+# go-mcp platform monorepo instructions
 
 ## Project status and purpose
 
-go-mcp is a Go library for building MCP servers compatible with MCP
-revision 2025-11-25. The public module is `go.osspkg.com/mcp` and the runtime
-packages must not add third-party dependencies.
+This repository is the starting point for a product monorepo. The implemented
+part is currently the Go library `go-mcp` for building MCP servers compatible
+with MCP revision 2025-11-25. The public module is `go.osspkg.com/mcp` and the
+Go runtime packages must not add third-party dependencies beyond the documented
+generated serialization dependency.
+
+The target product adds native Python and TypeScript SDKs, shared protocol and
+conformance assets, and a platform layer. `ROADMAP.md` describes the target
+state; planned directories and commands are not current capabilities until the
+corresponding task is complete.
 
 The supported transports are:
 
@@ -23,11 +30,12 @@ Use this priority when information conflicts:
 1. current source code and tests;
 2. this file for repository workflow and invariants;
 3. the public API documentation;
-4. examples and skill references.
+4. `PLAN.md` for the active monorepo migration tasks;
+5. public documentation, examples, and skill references.
 
-Do not recreate or reintroduce `PLAN.md`. The active planning history has been
-retired; use the current API, tests, documentation, and issue/task request as
-the implementation context.
+`PLAN.md` is the active implementation plan and must be updated when its task
+state changes. `ROADMAP.md` records longer-term milestones and architectural
+decisions. Neither file overrides current source code or tests.
 
 The documentation set is intentionally split by audience:
 
@@ -38,6 +46,8 @@ The documentation set is intentionally split by audience:
 | `DOC.ru.md` | Complete Russian API and developer guide |
 | `example/README.md` | English index of runnable examples |
 | `skills/go-mcp/SKILL.md` | AI-assisted development workflow and references |
+| `PLAN.md` | Active monorepo implementation plan |
+| `ROADMAP.md` | Polyglot architecture and release roadmap |
 | `LICENSE` | BSD 3-Clause legal terms |
 
 ## Non-negotiable runtime rules
@@ -56,6 +66,24 @@ The documentation set is intentionally split by audience:
   variables, timeouts, and configuration values.
 - Do not add CORS, authentication providers, TLS termination, or business
   storage implicitly. Keep those policies in application code or a proxy.
+
+## Polyglot monorepo and release rules
+
+- Keep the root `go.mod` and module path `go.osspkg.com/mcp` unless an explicit
+  migration decision addresses Go module tags and downstream imports.
+- Implement Python and TypeScript SDKs natively. Do not make them execute the
+  Go SDK through a subprocess or depend on a Go runtime.
+- Treat `protocol/` as the versioned wire contract and fixture source. Generate
+  protocol-level artifacts only; keep high-level language APIs idiomatic.
+- Run the same conformance scenarios against every SDK. A protocol or transport
+  behavior change is incomplete until all affected SDKs, fixtures, examples,
+  and compatibility metadata are updated.
+- Keep the MCP protocol revision separate from the product SDK version.
+- Use one release manifest and one Git tag for a product release. Build and
+  validate every package before publishing; make registry publication retryable
+  because package registries do not provide one cross-registry transaction.
+- Do not add future package or release commands to this file until their
+  manifests, scripts, and CI jobs exist in the checkout.
 
 ## API and behavior invariants
 
@@ -95,6 +123,12 @@ The documentation set is intentionally split by audience:
 | `config/` | env/YAML parsing and transport assembly |
 | `example/` | buildable sample servers and generated models |
 | `skills/go-mcp/` | reusable agent skill, references, and examples |
+| `protocol/` (planned) | versioned wire schemas and cross-language fixtures |
+| `conformance/` (planned) | language-neutral compatibility scenarios and runner |
+| `python/` (planned) | native Python SDK |
+| `typescript/` (planned) | native TypeScript/JavaScript SDK |
+| `platform/` (planned) | platform applications and integrations |
+| `tools/` (planned) | generation, validation, and release tooling |
 | `README.md` / `DOC*.md` | user documentation |
 
 Keep transport-specific behavior out of the core. Prefer small focused files
@@ -111,9 +145,12 @@ For every behavior or API change:
    behavior.
 4. Add regression tests for malformed input, cancellation, authorization,
    limits, duplicate registration, session cleanup, or races when applicable.
-5. Update Go doc comments, README examples, DOC.md, DOC.ru.md, and
-   example/README.md when the public behavior changes.
-6. Run the quality gates below and inspect the final diff.
+5. For a protocol or cross-language behavior change, update `protocol/`, all
+   affected SDKs, conformance fixtures, examples, compatibility metadata, and
+   language-specific documentation together.
+6. Update Go doc comments, README examples, DOC.md, DOC.ru.md, and
+   example/README.md when the Go public behavior changes.
+7. Run the quality gates below and inspect the final diff.
 
 Do not commit generated coverage artifacts or local tool output unless the task
 explicitly requests them. Do not commit secrets, tokens, local configuration,
